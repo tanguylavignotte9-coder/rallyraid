@@ -1,5 +1,4 @@
 name: CI
-
 on:
   push:
     branches: [main]
@@ -14,3 +13,14 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+      # Syntaxe du launcher PowerShell : les runners GitHub ont pwsh
+      # préinstallé (même sur Linux) — tout guillemet cassé par une
+      # apostrophe française fait échouer la CI AVANT que le launcher
+      # touche un PC Windows.
+      - name: Syntaxe du launcher PowerShell
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path start.ps1), [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
