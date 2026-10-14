@@ -1,0 +1,13 @@
+{
+  "name": "rallyraid",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Rally Raid — course stratégique persistante multi-joueurs (serveur autoritaire, cœur déterministe, clients navigateur PC/mobile)",
+  "scripts": {
+    "test": "node --experimental-strip-types --test \"tests/*.test.ts\""
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}
