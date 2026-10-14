@@ -219,6 +219,9 @@ function render() {
   $('tireBar').style.width = `${Math.min(100, me.tireWear * 100)}%`;
   $('planTitle').textContent = `Stratégie — ${me.name}`;
 
+  // voiture auto-attribuée : proposer la personnalisation (une fois)
+  $('personalizeRow').style.display = me.autoCreated ? 'flex' : 'none';
+
   // journal complet + bandeau direct
   renderEvents(me.events);
   renderActions();
@@ -355,6 +358,20 @@ async function drawProfile() {
   $('profLegend').innerHTML = kmB.map((k, i) =>
     `<span style="color:${BIOME_COLORS[i]}">■</span> ${BIOME_NAMES[i]} ${Math.round(k)} km`).join(' · ');
 }
+
+$('personalizeBtn').onclick = async () => {
+  /* personnalisation différée d'une voiture auto-attribuée : nom + livrée
+     (les gommes sont un réglage de préparation — ignorées en course) */
+  const name = prompt('Nom d\'équipe :', me.user);
+  if (name === null) return;
+  const r = await api('/api/configure', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, color: snap.me.color }),
+  });
+  const d = await r.json();
+  if (r.status !== 200) alert(d.error ?? 'erreur');
+  else poll();
+};
 
 $('configureBtn').onclick = async () => {
   const name = $('teamName').value.trim();

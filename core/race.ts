@@ -190,6 +190,7 @@ export type RaceCar = KinCar & {
   contactSlowT: number;    // ralentissement restant après contact léger
   attackMan: boolean;      // une MANŒUVRE de doublage est lancée (risque tiré 1 fois)
   attackCooldown: number;  // délai avant une nouvelle manœuvre à risque
+  autoCreated: boolean;    // attribuée automatiquement au départ (personnalisable une fois)
   heavyDamage: boolean;     // dégât lourd : réparation obligatoire au garage
 };
 
@@ -263,6 +264,7 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
     contactSlowT: 0,
     attackMan: false,
     attackCooldown: 0,
+    autoCreated: false,
     heavyDamage: false,
   };
 }

@@ -55,6 +55,43 @@ if (adminPass !== null) {
   console.log('==========================================================');
 }
 
+/* ============================================================
+   REMPLISSAGE DE LA GRILLE AU DÉPART
+   ============================================================
+   Au coup d'envoi, TOUT compte joueur actif sans voiture en reçoit
+   une automatiquement : nom = identifiant, livrée = première libre
+   de la palette, plan par défaut du cœur, gommes dures. La grille
+   est figée au départ — un compte créé après attend le reset
+   suivant. Fonction PURE sur des données en entrée : même comptes
+   dans le désordre ⇒ même remplissage (déterminisme). */
+export type EligibleAccount = { username: string; created: number };
+
+export function fillGrid(
+  accountsList: EligibleAccount[],
+  existingCars: { owner: string | null }[],
+  palette: string[],
+  maxCars: number,
+): { username: string; color: string }[] {
+  /* ordre DÉTERMINISTE : date de création, puis username (ties) */
+  const sorted = [...accountsList].sort((a, b) =>
+    a.created - b.created || (a.username < b.username ? -1 : a.username > b.username ? 1 : 0));
+  const taken = new Set(existingCars.map((c) => c.owner).filter((o) => o !== null));
+  /* couleurs prises : les voitures existantes occupent leur livrée */
+  const usedColors = new Set<string>();
+  for (const car of existingCars as { owner: string | null; color?: string }[]) {
+    if (car.color) usedColors.add(car.color);
+  }
+  const free = palette.filter((col) => !usedColors.has(col));
+  const out: { username: string; color: string }[] = [];
+  const room = maxCars - existingCars.length;
+  for (const acc of sorted) {
+    if (out.length >= room) break;
+    if (taken.has(acc.username)) continue;
+    out.push({ username: acc.username, color: free.shift() ?? '#888888' });
+  }
+  return out;
+}
+
 /* ---- course ---- */
 function loadRace(): Race {
   if (existsSync(STATE_FILE)) {
@@ -103,6 +140,7 @@ function publicCar(c: RaceCar, i: number): PublicCar {
     id: c.id, rank: i + 1, name: c.name, color: c.color,
     km: c.s / 1000, v: 0, st: c.st, stopKind: c.stopKind,
     configured: c.owner !== null,
+    autoCreated: c.autoCreated,
     pos3: { x: p.x, y: p.y, z: race.trk.heightAt(c.s) },
     hd: p.hd,
     d: c.d,
@@ -152,6 +190,7 @@ function buildMe(car: RaceCar): unknown {
       plan: car.plan,
       events: car.events,
       finishedAt: car.finishedAt,
+      autoCreated: car.autoCreated,
       d: car.d,
       brake: car.brkCmd > 0 ? 1 : 0,
       roll: car.roll,
@@ -318,21 +357,44 @@ const server = http.createServer(async (req, res) => {
 
     if (url.pathname === '/api/configure' && req.method === 'POST') {
       /* première configuration de SA voiture : nom d'équipe + livrée.
-         La voiture n'existait pas avant — elle s'insrit sur la grille */
-      if (me) { sendJSON(res, 400, { error: 'voiture déjà configurée' }); return; }
-      if (race.phase !== 'preparation') { sendJSON(res, 400, { error: 'la grille est fermée — course en cours' }); return; }
+         La voiture n'existait pas avant — elle s'insrit sur la grille.
+         EXCEPTION (design : grille auto-remplie au départ) : si la
+         voiture de me a été AUTO-ATTRIBUÉE, le joueur la personnalise
+         à sa première connexion, à TOUT moment — l'identité reste au
+         joueur. Les gommes sont un réglage de préparation : silencieusement
+         ignorées si la course a déjà commencé. */
+      const mine = me;
+      if (mine && !mine.autoCreated) { sendJSON(res, 400, { error: 'voiture déjà configurée' }); return; }
+      if (!mine && race.phase !== 'preparation') { sendJSON(res, 400, { error: 'la grille est fermée — course en cours' }); return; }
+      const personalizing = Boolean(mine?.autoCreated);
       const body = JSON.parse(await readBody(req)) as { name?: string; color?: string; tire?: TireKind };
       const name = (body.name ?? '').trim().slice(0, 20);
       if (name.length < 2) { sendJSON(res, 400, { error: 'nom d\'équipe trop court' }); return; }
       if (body.tire && !(body.tire in TIRES)) { sendJSON(res, 400, { error: 'gommes inconnues' }); return; }
-      if (race.cars.length >= race.config.maxCars) { sendJSON(res, 400, { error: 'grille complète' }); return; }
+      if (!personalizing && race.cars.length >= race.config.maxCars) { sendJSON(res, 400, { error: 'grille complète' }); return; }
       let color = body.color ?? '';
       if (!LIVERY_PALETTE.includes(color)) { sendJSON(res, 400, { error: 'livrée inconnue' }); return; }
-      if (race.cars.some((c) => c.color === color)) { sendJSON(res, 400, { error: 'livrée déjà prise dans cette course' }); return; }
-      const car = addCar(race, name, color);
-      if (body.tire) car.tire = body.tire;   // réglage d'avant-course (gommes)
-      car.owner = acc.username;
-      acc.carId = car.id;
+      /* une livrée déjà prise est refusée, SAUF si c'est celle de SA
+         propre voiture (cas de la personnalisation sans changement) */
+      const takenBy = race.cars.find((c) => c.color === color);
+      if (takenBy && takenBy.id !== mine?.id) { sendJSON(res, 400, { error: 'livrée déjà prise dans cette course' }); return; }
+      let car;
+      if (personalizing && mine) {
+        /* personnalisation différée : on renomme et re-livre SA voiture
+           auto-attribuée — elle devient définitivement sienne */
+        car = mine;
+        car.name = name;
+        car.color = color;
+        if (race.phase === 'preparation' && body.tire && body.tire in TIRES) {
+          car.tire = body.tire;   // gommes : réglage d'avant-course uniquement
+        }
+        car.autoCreated = false;  // plus renommable (comme les autres)
+      } else {
+        car = addCar(race, name, color);
+        if (body.tire && body.tire in TIRES) car.tire = body.tire;
+        car.owner = acc.username;
+        acc.carId = car.id;
+      }
       accounts.save();
       snapshot = buildSnapshot();
       save();
@@ -583,6 +645,29 @@ setInterval(() => {
        quand la date réelle a passé startEpochMs (déterminisme) */
     if (race.phase === 'preparation' && now >= race.config.startEpochMs) {
       race.departed = true;
+      /* REMPLISSAGE DE LA GRILLE avant le premier pas : tout compte
+         actif sans voiture en reçoit une (nom = identifiant, livrée
+         libre, plan par défaut, dures). Les voitures configurées
+         pendant la préparation sont prioritaires ; on complète
+         jusqu'à maxCars. */
+      const eligible = [...accounts.accounts.values()]
+        .filter((a) => !a.disabled)
+        .map((a) => ({ username: a.username, created: a.created }));
+      const fills = fillGrid(eligible, race.cars, LIVERY_PALETTE, race.config.maxCars);
+      let auto = 0;
+      for (const f of fills) {
+        const car = addCar(race, f.username, f.color);
+        car.owner = f.username;
+        car.tire = 'dures';
+        car.autoCreated = true;
+        const acc = accounts.accounts.get(f.username);
+        if (acc) acc.carId = car.id;
+        auto++;
+      }
+      if (auto > 0) accounts.save();
+      const outOfGrid = eligible.filter((e) =>
+        !race.cars.some((c) => c.owner === e.username)).length;
+      console.log(`Départ : ${race.cars.length} voitures, dont ${auto} auto-attribuées, ${outOfGrid} comptes hors grille (max ${race.config.maxCars})`);
       console.log('Départ donné !');
     }
     if (race.phase !== 'finished') stepRace(race, STEP_BATCH);

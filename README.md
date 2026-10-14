@@ -29,7 +29,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 | `GET /api/me` | Compte courant : user, niveau, voiture |
 | `GET /api/state` | Classement public + SA voiture en détail ; `hour` (Paris), météo et `pos3` par voiture |
 | `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire : `{x, y, z, hd, w, biome, seg}` + `pois` (rétro-compatible 2D : x/y) |
-| `POST /api/configure` | Première configuration : nom d'équipe + livrée (grille ouverte) |
+| `POST /api/configure` | Première configuration (grille ouverte) — ou personnalisation différée d'une voiture auto-attribuée (à tout moment, une fois) |
 | `GET /api/liveries` | Livrées encore disponibles |
 | `POST /api/plan` | Remplacer le plan de SA voiture (ou de n'importe laquelle pour un super) |
 | `POST/GET /api/cb` | CB de proximité : émission (anti-flood 5 s) / réception filtrée ≤ 100 km |
@@ -42,7 +42,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 
 Toutes les routes API (et les pages de jeu) exigent une session valide — 401 sinon.
 
-**Comptes & déroulé** : pas d'auto-inscription — l'admin crée les comptes. Au premier lancement du serveur, un compte `admin` est créé avec un mot de passe aléatoire **affiché une seule fois dans la console** (modifiable dans la page admin, `admin.html`). Déroulé d'une course : **préparation** (compte à rebours, les joueurs configurent leur voiture — nom d'équipe + livrée unique) → **course** (temps réel 1:1) → **terminée** (podium et résumé figés jusqu'au prochain reset admin).
+**Comptes & déroulé** : pas d'auto-inscription — l'admin crée les comptes. Au premier lancement du serveur, un compte `admin` est créé avec un mot de passe aléatoire **affiché une seule fois dans la console** (modifiable dans la page admin, `admin.html`). Déroulé d'une course : **préparation** (compte à rebours, les joueurs configurent leur voiture — nom d'équipe + livrée unique) → **course** (temps réel 1:1) → **terminée** (podium et résumé figés jusqu'au prochain reset admin). Au départ, tout compte actif sans voiture en reçoit une automatiquement (nom = identifiant, livrée libre, plan par défaut) — il la personnalise à sa première connexion ; la grille est figée au départ, un compte créé après attend le reset suivant.
 
 Interface « une voiture » : chaque joueur voit SA voiture (jauges, plan, journal) et des autres seulement position, nom et état visible. Le super utilisateur garde un sélecteur discret de participant ; l'admin a la page d'administration (comptes : création, mot de passe, niveau super, désactivation ; course : reset avec graine, distance, date/heure de départ, fenêtre de préparation, type de fin distance/durée, survie sans connexion, densité POI, forme de la bride de nuit, nb d'inscriptions max).
 
