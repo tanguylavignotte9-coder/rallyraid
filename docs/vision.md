@@ -70,7 +70,7 @@
 ### L'identité et la vitrine
 - **Nom d'équipe + livrée** (couleurs) : chaque voiture est reconnaissable de loin.
 - **Engagement** : 2-3 consultations/jour suffisent pour un niveau standard ; la surveillance fait la différence au sommet.
-- **Carte 2D pour jouer + vue 3D spectateur** : on « regarde la course ».
+- **Carte 2D pour jouer + vue 3D spectateur** : on « regarde la course ». La vue 3D (page spectateur séparée) : chase cam lissée sur la voiture suivée (orbite lente à l'arrêt), monde riche low-poly par biome (terrain, végétation, ponts à arche sur les ravins, tunnels sombres), cycle jour/nuit COMPLET calé sur l'horloge de Paris réelle — vraie nuit sombre à étoiles, aubes et crépuscules chauds — POI éclairés comme des balises de vie dans le noir, ciel annonçant la météo du biome (pluie = ciel lourd et nuages bas), voitures à roues tournantes et suspension branchée sur le cœur, poussière plus dense au désert. Ombres légères sur PC, flat shading mobile, qualité auto-dégradée sous 28 fps.
 - **Onboarding : rien pour le moment** (décision explicite — éventuellement plus tard).
 
 ### Comptes, déroulé et interface (acté, mise en œuvre)

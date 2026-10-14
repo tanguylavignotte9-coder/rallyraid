@@ -19,7 +19,7 @@ import path from 'node:path';
 import { DT } from '../core/engine.ts';
 import {
   makeRace, addCar, stepRace, rankCars, serializeRace, deserializeRace,
-  setPlan, wakeSurvival, parisClock, DEFAULT_CONFIG,
+  setPlan, wakeSurvival, parisClock, parisHour, weatherRain, DEFAULT_CONFIG,
   TIRES, CB_RANGE_KM, CB_MIN_INTERVAL_S,
   type Plan, type Race, type RaceCar, type RaceConfig, type TireKind,
 } from '../core/race.ts';
@@ -85,23 +85,41 @@ type PublicCar = {
   id: number; rank: number; name: string; color: string;
   km: number; v: number; st: string; stopKind: string | null;
   configured: boolean;
+  pos3: { x: number; y: number; z: number };
+  hd: number;
+  d: number;
+  brake: 0 | 1;
 };
 
 /* ce qu'un joueur voit des AUTRES : position, nom, km, état visible —
    jamais leurs jauges ni leur vitesse (vision : « des adversaires, on
    ne voit que positions et écarts ») */
 function publicCar(c: RaceCar, i: number): PublicCar {
+  const p = race.trk.roadPoint(c.s);
   return {
     id: c.id, rank: i + 1, name: c.name, color: c.color,
     km: c.s / 1000, v: 0, st: c.st, stopKind: c.stopKind,
     configured: c.owner !== null,
+    pos3: { x: p.x, y: p.y, z: race.trk.heightAt(c.s) },
+    hd: p.hd,
+    d: c.d,
+    brake: c.brkCmd > 0 ? 1 : 0,
   };
 }
 
 function buildSnapshot() {
   const ranked = rankCars(race);
+  /* HEURE décimale de Paris (0-24) : pilote le cycle jour/nuit 3D ;
+     météo par tronçon pour le ciel (pluie = ciel lourd, sec = dégagé) */
+  const hour = parisHour(race);
+  const weather = [0, 1, 2, 3].map((b) => {
+    const s = ranked[0]?.s ?? 0;
+    return weatherRain(race.seed, s) ? 'rain' : 'dry';
+  });
   return {
     simT: race.simT,
+    hour,
+    weather,
     clock: parisClock(race),
     phase: race.phase,
     finished: race.finished,
@@ -135,6 +153,9 @@ function buildMe(car: RaceCar): unknown {
       events: car.events,
       finishedAt: car.finishedAt,
       d: car.d,
+      brake: car.brkCmd > 0 ? 1 : 0,
+      roll: car.roll,
+      pitch: car.pitch,
       survivalStop: car.survivalStop,
       pos: race.trk.roadPoint(car.s),
     },
@@ -258,14 +279,39 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/api/track') {
+      /* VUE 3D SPECTATEUR : chaque point gagne z (altitude), hd (cap),
+         w (demi-largeur), biome et seg (0 sol, 1 pont, 2 tunnel) ; la
+         réponse gagne les POI de la fenêtre. RÉTRO-COMPATIBLE : l'interface
+         2D existante ne lit que x/y. Bornes conservées : len max 200 000,
+         step min 8. */
       const s0 = Number(url.searchParams.get('s0') ?? '0');
       const step = Math.max(8, Number(url.searchParams.get('step') ?? '80'));
       const len = Math.min(200_000, Number(url.searchParams.get('len') ?? 60000));
-      const pts: { x: number; y: number }[] = [];
+      const pts: { x: number; y: number; z: number; hd: number; w: number; biome: number; seg: number }[] = [];
       for (let s = s0; s < s0 + len; s += step) {
-        pts.push(race.trk.roadPoint(Math.min(s, race.trk.finishS)));
+        const sc = Math.min(s, race.trk.finishS);
+        const p = race.trk.roadPoint(sc);
+        const k = Math.min(race.route.nChunks - 1, Math.floor(sc / 20800));
+        /* segType n'est pas exposé par RouteTrack : lecture directe du
+           chunk (déterministe, en cache) */
+        let seg = 0;
+        const c = race.route.chunks.get(k);
+        if (c) {
+          const i = Math.min(2599, Math.max(0, Math.floor((sc - c.s0) / 8)));
+          seg = c.segType[i] ?? 0;
+        }
+        pts.push({
+          x: p.x, y: p.y, z: race.trk.heightAt(sc), hd: p.hd,
+          w: race.trk.wAt(sc), biome: Math.floor(race.trk.biomeAt(sc)), seg,
+        });
       }
-      sendJSON(res, 200, { pts });
+      /* POI de la fenêtre (positions absolues pour la 3D) */
+      const pois = race.trk.poisAhead(Math.max(0, s0), len)
+        .map((poi) => {
+          const p = race.trk.roadPoint(poi.s);
+          return { s: poi.s, kind: poi.kind, x: p.x, y: p.y, z: race.trk.heightAt(poi.s) };
+        });
+      sendJSON(res, 200, { pts, pois, seed: race.seed });
       return;
     }
 

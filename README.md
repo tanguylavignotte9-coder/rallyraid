@@ -28,7 +28,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 | `POST /api/login` / `POST /api/logout` | Session (cookie httpOnly, plusieurs sessions autorisées) |
 | `GET /api/me` | Compte courant : user, niveau, voiture |
 | `GET /api/state` | Classement public + SA voiture en détail (session requise) |
-| `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire (pour la carte) |
+| `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire : `{x, y, z, hd, w, biome, seg}` + `pois` (rétro-compatible 2D : x/y) |
 | `POST /api/configure` | Première configuration : nom d'équipe + livrée (grille ouverte) |
 | `GET /api/liveries` | Livrées encore disponibles |
 | `POST /api/plan` | Remplacer le plan de SA voiture (ou de n'importe laquelle pour un super) |
@@ -38,6 +38,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 | `GET/POST /api/admin/reset` | Paramètres et reset de course (admin) |
 | `GET /api/admin/seedmap?seed=&km=` | Explorateur de graines : carte + profil + stats (admin) |
 | `GET /api/profile` | Carte complète + profil d'altitude (préparation) |
+| `/spectate.html` | Vue 3D spectateur : chase cam, monde par biome, cycle jour/nuit réel (Paris) |
 
 Toutes les routes API (et les pages de jeu) exigent une session valide — 401 sinon.
 
