@@ -6,6 +6,13 @@ Course stratégique persistante multi-jouieurs. Des voitures de rally raid roule
 
 ## Jouer
 
+**En 1 clic** (vérifie/installe Node.js si besoin, démarre le serveur, ouvre le navigateur) :
+
+- **Windows** : double-cliquer `start.cmd` (PowerShell ; installe Node via winget si absent)
+- **Linux / macOS** : `./start.sh` (propose d'installer Node via apt/brew si absent)
+
+Ou manuellement :
+
 ```bash
 npm start          # serveur autoritaire sur http://localhost:8787
 ```
