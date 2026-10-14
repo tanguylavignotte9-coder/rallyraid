@@ -2,7 +2,33 @@
 
 Course stratégique persistante multi-jouieurs. Des voitures de rally raid roulent **en continu pendant plusieurs jours** (compétition calée sur l'horaire de Paris). Chaque joueur, depuis son navigateur (PC ou mobile), ne conduit pas : il **planifie la stratégie** — changements de pneus, arrêts (stations-service, hôtels, garages), niveau de performance moteur (consommation, usure). La voiture roule toute seule, connecté ou non, et les participants se doublent et se redoublent tout au long de la compétition.
 
-> Ce dépôt est encore en **Phase 0 : fondations**. Le moteur physique est réel et testé ; le serveur, l'API et l'interface viendront ensuite (voir la [feuille de route](#feuille-de-route)).
+> **Première version jouable** : serveur autoritaire temps réel 1:1 + interface de stratège dans le navigateur — voir [Jouer](#jouer).
+
+## Jouer
+
+```bash
+npm start          # serveur autoritaire sur http://localhost:8787
+```
+
+Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français : carte 2D, classement, jauges, journal, éditeur de plan). Le serveur :
+
+- simule la course **en temps réel 1:1** (horloge de Paris), 24 h/24 ;
+- **persiste l'état sur disque** (`server/race-state.json`) : fermer le serveur puis le relancer reprend la course exactement où elle en était (même graine ⇒ même course, ADR 0004) ;
+- sert l'interface et une petite API JSON :
+
+| Endpoint | Rôle |
+|---|---|
+| `GET /api/state` | Snapshot complet : classement, jauges, plans, journal, positions |
+| `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire (pour la carte) |
+| `POST /api/plan` | Remplacer le plan d'une voiture |
+| `POST /api/cars` | Ajouter une voiture (nom, couleur) |
+| `POST /api/reset` | Recréer une course (seed, distance) |
+
+Mode « super utilisateur » : vous pilotez toutes les voitures depuis le même navigateur (cliquer une voiture ou une ligne du classement pour la sélectionner, éditer son plan, appliquer).
+
+Règles simulées (temps réel 1:1, distance de test 1000 km par défaut) : la **nuit** (22 h–6 h, Paris) bride la vitesse ; la **fatigue** compte les heures de veille et force un sommeil de survie en bord de route au-delà de 30 h ; la **panne sèche** immobilise 2 h (assistance) ; les arrêts se font aux **points d'intérêt** de l'itinéraire (station = plein 12 min, hôtel = sommeil à la minute près, garage = réparation 30 min).
+
+Variables d'environnement : `RALLY_PORT` (défaut 8787), `RALLY_SEED` (défaut 42), `RALLY_TOTAL_KM` (défaut 1000).
 
 ## Architecture
 
@@ -39,6 +65,10 @@ Points clés :
 | Chemin | Rôle |
 |---|---|
 | `core/engine.ts` | Le moteur complet (piste + physique + IA de conduite + duel). Toutes les fonctions top-level sont exportées. |
+| `core/route.ts` | L'itinéraire linéaire départ → arrivée, généré par chunks à la demande, avec POI (stations, hôtels, garages). |
+| `core/race.ts` | La course : carburant, fatigue, sommeil, nuit, arrêts, exécution des plans, sérialisation. |
+| `server/server.ts` | Le serveur autoritaire : simulation temps réel 1:1, persistance, API JSON, fichiers statiques. |
+| `web/` | L'interface stratège (HTML/JS, aucune dépendance). |
 | `tests/core.test.ts` | Non-régression : déterminisme au bit près, tour de référence dans le budget de grip, duel sans contact. |
 | `docs/vision.md` | Le jeu tel que voulu par l'auteur — document vivant de game design. |
 | `docs/adr/` | Architecture Decision Records : chaque décision fondatrice, son contexte et son pourquoi. |
@@ -49,17 +79,17 @@ Points clés :
 Le dépôt est pensé pour être vérifié sans toucher au code :
 
 - **Chaque push** déclenche la CI (onglet *Actions* sur GitHub) : ✔ vert = le moteur est sain.
-- Les **3 tests** garantissent : deux courses de la même graine sont identiques image par image ; un tour complet se boucle au temps de référence sans dépasser l'adhérence des pneus ; un duel de 15 minutes produit des tentatives de doublage mais zéro contact.
+- Les **15 tests** garantissent : deux courses de la même graine sont identiques image par image ; un tour complet se boucle au temps de référence sans dépasser l'adhérence des pneus ; un duel de 15 minutes produit des tentatives de doublage mais zéro contact.
 
 ## Feuille de route
 
 | Phase | Contenu | État |
 |---|---|---|
 | **0 — Fondations** | Moteur migré et testé, ADR, CI, vision documentée | ✅ ce commit |
-| **1 — Généralisation** | N voitures (au lieu de 2) · variables d'usure (pneus, moteur, carburant) · points d'arrêt sur la piste | ⬜ |
-| **2 — Stratégie** | Format de *plan* (données), exécuteur, plan par défaut hors-ligne | ⬜ |
-| **3 — Serveur** | Simulation persistante 24 h/24 calée sur Paris, snapshots/reprise, API temps réel | ⬜ |
-| **4 — Interface** | Client web PC/mobile : carte, télémétrie, éditeur de plan | ⬜ |
+| **1 — Généralisation** | N voitures (au lieu de 2) · variables d'usure (pneus, moteur, carburant) · points d'arrêt sur la piste | ✅ |
+| **2 — Stratégie** | Format de *plan* (données), exécuteur, plan par défaut hors-ligne | ✅ |
+| **3 — Serveur** | Simulation persistante 24 h/24 calée sur Paris, snapshots/reprise, API JSON | ✅ cette version |
+| **4 — Interface** | Client web PC/mobile : carte, classement, jauges, journal, éditeur de plan | ✅ cette version |
 | **5 — Compétition** | Course multi-jouieurs de plusieurs jours, doublages/rétablissements | ⬜ |
 
 ## Décisions fondatrices

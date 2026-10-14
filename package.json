@@ -5,7 +5,8 @@
   "type": "module",
   "description": "Rally Raid — course stratégique persistante multi-joueurs (serveur autoritaire, cœur déterministe, clients navigateur PC/mobile)",
   "scripts": {
-    "test": "node --experimental-strip-types --test \"tests/*.test.ts\""
+    "test": "node --experimental-strip-types --test \"tests/*.test.ts\"",
+    "start": "node --experimental-strip-types server/server.ts"
   },
   "engines": {
     "node": ">=22.6"

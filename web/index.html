@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rally Raid — poste de stratège</title>
+<style>
+  :root {
+    --bg: #10151c; --panel: #171e27; --line: #232d3a; --txt: #dce3ec;
+    --mut: #7c8794; --acc: #e63946; --ok: #2a9d8f;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body { background: var(--bg); color: var(--txt);
+    font: 14px/1.45 system-ui, -apple-system, sans-serif; }
+  header { display: flex; align-items: center; gap: 16px; padding: 10px 16px;
+    border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; letter-spacing: 0.08em; }
+  header .clock { font-variant-numeric: tabular-nums; color: var(--mut); }
+  .layout { display: grid; grid-template-columns: 300px 1fr; gap: 12px;
+    padding: 12px; align-items: start; }
+  @media (max-width: 900px) { .layout { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 12px; }
+  .panel h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--mut); margin-bottom: 8px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 4px 6px; text-align: left; border-bottom: 1px solid var(--line); }
+  tr.sel { background: #1d2735; cursor: pointer; }
+  tr { cursor: pointer; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }
+  .km { font-variant-numeric: tabular-nums; }
+  #map { width: 100%; height: 420px; display: block; background: #0b0f14;
+    border-radius: 6px; touch-action: none; }
+  .gauges { display: grid; gap: 8px; }
+  .gauge label { display: flex; justify-content: space-between; font-size: 12px;
+    color: var(--mut); }
+  .bar { height: 10px; background: #0b0f14; border-radius: 5px; overflow: hidden; }
+  .bar > div { height: 100%; transition: width 0.5s; }
+  select, input, button { background: #0b0f14; color: var(--txt);
+    border: 1px solid var(--line); border-radius: 5px; padding: 6px 8px;
+    font: inherit; width: 100%; }
+  button { cursor: pointer; }
+  button.primary { background: var(--acc); border-color: var(--acc); }
+  .row { display: flex; gap: 8px; margin-top: 8px; }
+  .row > * { flex: 1; }
+  .actions-list { margin-top: 8px; }
+  .action-item { display: flex; gap: 8px; align-items: center; padding: 4px 0;
+    border-bottom: 1px solid var(--line); font-size: 13px; }
+  .action-item button { width: auto; padding: 2px 8px; color: var(--mut); }
+  .events { max-height: 220px; overflow-y: auto; font-size: 12px; }
+  .events p { padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--mut); }
+  .events p b { color: var(--txt); }
+  .muted { color: var(--mut); }
+  #conn { font-size: 12px; }
+  .on { color: var(--ok); } .off { color: var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>RALLY RAID</h1>
+  <span class="clock" id="clock">—</span>
+  <span class="muted" id="raceInfo"></span>
+  <span id="conn" class="off">déconnecté</span>
+</header>
+<div class="layout">
+  <div>
+    <div class="panel" style="margin-bottom:12px">
+      <h2>Classement</h2>
+      <table id="standings"><tbody></tbody></table>
+    </div>
+    <div class="panel">
+      <h2>Journal — <span id="carName"></span></h2>
+      <div class="events" id="events"></div>
+    </div>
+  </div>
+  <div>
+    <div class="panel" style="margin-bottom:12px">
+      <h2>Carte</h2>
+      <canvas id="map"></canvas>
+      <div class="muted" id="mapHint" style="margin-top:4px;font-size:12px">
+        Molette : zoom · glisser : déplacer · clic sur une voiture : sélection
+      </div>
+    </div>
+    <div class="panel">
+      <h2 id="planTitle">Stratégie</h2>
+      <div class="gauges" id="gauges">
+        <div class="gauge"><label><span>Carburant</span><span id="fuelTxt"></span></label>
+          <div class="bar"><div id="fuelBar" style="background:#e9c46a"></div></div></div>
+        <div class="gauge"><label><span>Fatigue</span><span id="fatTxt"></span></label>
+          <div class="bar"><div id="fatBar" style="background:#e76f51"></div></div></div>
+        <div class="gauge"><label><span>Vitesse</span><span id="spdTxt"></span></label>
+          <div class="bar"><div id="spdBar" style="background:#2a9d8f"></div></div></div>
+      </div>
+      <div class="row">
+        <div>
+          <label class="muted" style="font-size:12px">Curseur moteur (perf ↔ conso)</label>
+          <input type="range" id="power" min="0.3" max="1" step="0.05" value="1">
+        </div>
+      </div>
+      <div class="row">
+        <select id="newAction">
+          <option value="refuelLow">Règle : ravitailler si réservoir bas</option>
+          <option value="sleepFat">Règle : dormir si fatigue haute</option>
+          <option value="refuelKm">Plan : plein au km…</option>
+          <option value="sleepKm">Plan : dormir au km… (7 h)</option>
+          <option value="repairKm">Plan : garage au km…</option>
+        </select>
+        <button id="addAction">Ajouter</button>
+      </div>
+      <div class="actions-list" id="actions"></div>
+      <div class="row">
+        <button class="primary" id="savePlan">Appliquer le plan</button>
+      </div>
+      <p class="muted" style="margin-top:8px;font-size:12px">
+        La voiture exécute le plan en continu, connecté ou non. La nuit (22 h–6 h,
+        Paris) la vitesse est bridée ; au-delà de 30 h de veille elle dort en bord
+        de route.
+      </p>
+    </div>
+  </div>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
