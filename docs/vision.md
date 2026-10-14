@@ -1,34 +1,43 @@
 # Vision du jeu — Rally Raid
 
-> Document vivant de game design. Consolidé après deux sessions de design avec l'auteur (2026-10-14). Il fait foi pour toutes les décisions de développement.
+> Document vivant de game design. Consolidé après trois sessions de design avec l'auteur (2026-10-14). Il fait foi pour toutes les décisions de développement.
 
 ## Le pitch
 
-**Une seule grande course de rally raid, ouverte à tous, en temps réel 1:1.** Les voitures roulent 24 h/24 pendant plusieurs jours (une semaine, deux), calées sur l'horaire de Paris. Le joueur ne conduit pas : il **planifie** — sommeil, ravitaillement, pneus, performance moteur. La voiture roule toute seule, connecté ou non, et les participants se doublent et se redoublent tout au long de la compétition.
+**Une grande course de rally raid ouverte à quelques dizaines d'équipes, en temps réel 1:1.** Les voitures roulent 24 h/24 pendant plusieurs jours sur un itinéraire linéaire de 15 000 à 25 000 km, calées sur l'horaire de Paris. Le joueur ne conduit pas : il **planifie** — sommeil, ravitaillement, pneus, performance moteur. La voiture roule toute seule, connecté ou non, et les participants se doublent et se redoublent tout au long de la compétition.
 
 ## Décisions actées
 
 ### La course
-- **Marathon continu 24 h/24**, temps réel **1:1 strict** (7 jours de course = 7 jours réels).
+- **Itinéraire linéaire** : un départ, une arrivée, pas de boucle. Les biomes s'enchaînent tout au long de la course (plaine → forêt → désert → altitude…).
+- **Temps réel 1:1 strict** et **assumer l'énormité** : 7 jours de course = 15-25 000 km au compteur, on roule vraiment tout ce temps.
 - **Départ commun** à date et heure fixes ; **fin paramétrée par événement** (distance totale ou durée).
-- **Une seule grande course persistante** ouverte à tous ; **que des voitures de vrais joueurs** (pas de PNJ de remplissage — l'IA de conduite est l'exécutant de chaque voiture, pas un adversaire).
-- **Classement** : premier arrivé au temps total (arrêts et incidents inclus) ; en intermédiaire, la position sur la route fait foi.
+- **Quelques dizaines de voitures maximum** : une course intime où l'on se connaît tous.
+- **Classement** : premier arrivé au temps total (arrêts et incidents inclus) ; en intermédiaire, la position sur la route fait foi ; les non-arrivés d'une course à durée sont **classés au kilomètre atteint**.
+- **Des courses programmées à des dates précises** : le serveur ouvre la course, elle se court, la suivante est planifiée.
+- **Éphémère** : chaque course est un nouveau départ — rien ne se transmet d'une course à l'autre, pas de palmarès cumulé.
+
+### La piste et le moteur (implications techniques)
+- Le générateur doit passer d'une boucle de 20 km à un **itinéraire linéaire généré à la demande** (chunks) — c'est le gros morceau de la Phase 1.
+- **Le duel s'arbitre paire par paire** (la règle de la corde) ; pas de gestion spécifique des paquets ou triples dépassements.
 
 ### Le plan stratégique (la « manette » du joueur)
-- **Deux étages** : des **règles conditionnelles générales** (ex. « si fatigue > 70 %, s'arrêter au prochain hôtel ») + des **actions planifiées prioritaires** (ex. « km 850 : pneus », « Djanet : dormir 6 h »).
-- **Horizon limité à 12-24 h** : on ne peut planifier que le futur proche — ça force à revenir, la course reste vivante.
-- **Révision libre et instantanée** quand on est connecté : tout est modifiable à tout moment.
+- **Deux étages** : des **règles conditionnelles générales** (ex. « si fatigue > 70 %, s'arrêter au prochain hôtel ») + des **actions planifiées prioritaires** (ex. « km 850 : pneus »).
+- **Horizon limité à 12-24 h** : on ne planifie que le futur proche — ça force à revenir, la course reste vivante.
+- **Révision libre et instantanée** quand on est connecté.
 - **Préparation d'avant-course** : quelques choix initiaux (gommes, réservoir, réglage moteur).
+- **Règle d'arrêt de survie** : sans connexion depuis **24 h**, la voiture s'arrête à un point d'arrêt et **ne repart qu'à la reconnexion**. (Amende l'ADR 0002 : le plan par défaut ne roule plus indéfiniment — une voiture non supervisée dort à un arrêt.)
 
 ### Le pilote : fatigue et sommeil
-- **Fatigue = compteur de veille** par pilote (temps depuis le dernier sommeil, pas calé sur l'horloge).
-- **Effets progressifs cumulés** : dégradation douce (vitesse, réflexes) puis **risques réels** de sortie de route au-delà d'un seuil. **Rouler la nuit coûte des risques supplémentaires.**
-- **Sommeil à la minute près** : à l'hôtel, durée exacte choisie ; chaque minute dort est récupérée. **Le repos ne s'achète pas** — il coûte du temps, jamais d'argent.
-- **Pénalité de survie** : sans plan et en fatigue critique → sommeil forcé **en bord de route** (très coûteux).
+- **Fatigue = compteur de veille** par pilote (temps depuis le dernier sommeil). La nuit n'accélère PAS ce compteur.
+- **La nuit bride la performance** : vitesse max réduite entre 22 h et 6 h (Paris), indépendamment de la fatigue.
+- **Effets progressifs cumulés** : dégradation douce (vitesse, réflexes) puis **risques réels** de sortie de route au-delà d'un seuil.
+- **Sommeil à la minute près à l'hôtel** : durée exacte choisie ; chaque minute dort est récupérée. **Le repos ne s'achète pas.**
+- **Sommeil en bord de route** (sans plan, fatigue critique) : récupération **complète mais deux fois moins efficace** qu'à l'hôtel.
 
 ### Les ressources et l'économie
-- **Budget à revenu périodique** : base fixe + bonus position et régularité. Dépenses : **carburant, pneus, réparations** — pas d'améliorations de voiture, pas d'achat d'information.
-- **Carburant : panne sèche possible** (immobilisation, assistance lente). **Pneus : usure simple** (jauge). **Moteur : mode perf ↔ usure/consommation, cassable mais réparable** (longue immobilisation au garage, jamais d'abandon).
+- **Budget à revenu périodique** : base fixe + bonus position + bonus régularité (**moitié rythme de croisière stable, moitié absence d'incident**). Dépenses : carburant, pneus, réparations — pas d'améliorations de voiture, pas d'achat d'information.
+- **Carburant : panne sèche possible** (immobilisation, assistance lente). **Pneus : usure simple** (jauge). **Moteur : mode perf ↔ usure/consommation, cassable mais réparable** — et **jamais de fin de course par accident : tout se répare, dans le pire cas très longtemps**.
 
 ### Les incidents
 - **Sortie de route** (fatigue critique) : immobilisation chronométrée **+ dégâts** (moteur/boîte), réparables au garage.
@@ -38,39 +47,40 @@
 
 ### Les arrêts (points d'intérêt)
 - **Pas de files** : chaque voiture a son poste, services en parallèle.
-- **Durées proportionnelles mais courtes et réalistes** (le plein au litre, la réparation selon les dégâts).
-- **Densité variable par biome** : zones riches (plaine) et zones désertiques vides — la vraie gestion d'autonomie.
+- **Durées proportionnelles mais courtes et réalistes**.
+- **Densité variable par biome** : zones riches (plaine) et zones désertiques vides.
 - **Services à la carte** selon l'offre du point d'intérêt (station = carburant, hôtel = sommeil, garage = mécanique).
 
-### Le duel à N voitures
-- **Le contact reste interdit en règle, MAIS il peut arriver** : selon les statistiques des voitures et un aléatoire dosé, un contact peut survenir → **accident plus ou moins grave, avec faute attribuée** à l'un ou à l'autre selon le contexte. *(Implication moteur : RNG semé — le déterminisme de l'ADR 0004 est préservé ; la garde anti-collision devient un réducteur de risque, plus une garantie absolue. Règles d'attribution de faute à définir.)*
+### Le duel à N voitures et les fautes
+- **Le contact reste interdit en règle, mais peut arriver** — sa fréquence est **systémique** : c'est l'agressivité des stratégies des joueurs qui détermine le taux (des courses prudentes produisent peu de contacts).
+- **L'attribution de la faute suit les règlements sportifs réels de course** :
+  - *Attaque à l'intérieur* : l'attaquant doit être maître de sa voiture, ne pas plonger de façon excessive ou brutale, et placer **au minimum son essieu avant à hauteur du rétroviseur** du défenseur **au point de corde** ;
+  - *Attaque à l'extérieur* : l'attaquant doit être **à hauteur ou devant** au point de corde pour exiger la largeur ;
+  - *Côte à côte significatif* : chaque pilote doit **laisser l'espace** nécessaire à l'autre pour tourner sans le forcer hors piste.
+- **Pénalité du fautif** : du temps (stop-and-go) **+ amende de budget dans certains cas**.
 - **Aspiration confirmée entre toutes les voitures** — l'arme du poursuivant.
-- **Voiture arrêtée** (panne, sommeil, réparation) : rangée sur le bas-côté, hors trajectoire — les autres passent sans contrainte.
+- **Voiture arrêtée** : rangée sur le bas-côté, hors trajectoire — les autres passent sans contrainte.
 
 ### L'information
-- **Aléa mixte** : bulletins prévisionnels sur la route à venir + surprises **déterministes côté serveur mais cachées** aux joueurs (l'incertitude vient de l'information non révélée, pas du hasard de simulation).
-- **Des adversaires, on ne voit que positions et écarts** : leurs états internes (carburant, fatigue, usure, plans) sont cachés.
-- **Pas de push** : à la reconnexion, un **journal chronologique détaillé** de chaque événement depuis la dernière visite.
+- **Aléa mixte** : bulletins prévisionnels + surprises **déterministes côté serveur mais cachées** (l'incertitude vient de l'information non révélée, jamais du hasard de simulation).
+- **Des adversaires, on ne voit que positions et écarts** ; leurs états internes sont cachés.
+- **Pas de push** : à la reconnexion, un **journal chronologique détaillé** de chaque événement.
 
 ### L'identité et la vitrine
 - **Nom d'équipe + livrée** (couleurs) : chaque voiture est reconnaissable de loin.
-- **Engagement** : compétitif = surveiller le plus possible ; mais **2-3 consultations/jour suffisent** pour un niveau de performance standard.
-- **Carte 2D pour jouer + vue 3D spectateur** (comme le prototype) : on « regarde la course ».
+- **Engagement** : 2-3 consultations/jour suffisent pour un niveau standard ; la surveillance fait la différence au sommet.
+- **Carte 2D pour jouer + vue 3D spectateur** : on « regarde la course ».
+- **Onboarding : rien pour le moment** (décision explicite — éventuellement plus tard).
 
-## Questions encore ouvertes
+## Questions encore ouvertes (équilibrage, à trancher en jeu)
 
-- **Attribution de la faute** (contact) : quelles règles ? La règle de la corde devient-elle le juge ? Quelle pénalité (temps ? dégâts ?) ?
-- **Fréquence du contact RNG** : à quel point rare ? (le prototype garantit 0 contact ; l'équilibrage est critique)
-- **Rotation des courses** : quand démarre la suivante ?
-- **Course à durée : classement des non-arrivés** (km parcourus ?).
-- **Onboarding** : mode découverte avant la grande course ?
-- **Plan de survie par défaut** : priorités quand tout va mal en même temps.
-- **Bonus « régularité »** du revenu : définition exacte.
-- **Couplage fatigue × nuit** : formule exacte.
+- Paramètres exacts : plafond nuit (−X % ?), durées stop-and-go et amendes, seuils et taux du RNG de contact, formule du bonus de régularité, couplage dégradation/risque de la fatigue.
+- Calendrier opérationnel des courses (dates précises).
+- Ces réglages se feront **en condition réelle**, avec des courses tests — plus en théorie.
 
 ## Ce qui est déjà acté (structurel)
 
 - **Serveur autoritaire** (ADR 0001) : simulation 24 h/24 sur le serveur, horloge Paris, clients navigateurs en lecture/stratégie.
-- **Le joueur est stratège** (ADR 0002) : aucune entrée de pilotage, la stratégie est un plan exécuté en continu, plan de survie par défaut hors connexion.
+- **Le joueur est stratège** (ADR 0002, amendé) : aucune entrée de pilotage, la stratégie est un plan exécuté en continu, arrêt de survie après 24 h sans connexion.
 - **Moteur maison déterministe** (ADR 0004) : TypeScript pur, pas fixe 1/120 s, PRNG semé — replays, reprise serveur, équité.
 - **Équité stricte** : même voiture pour tous ; l'asymétrie ne vient que des choix stratégiques et de la gestion du risque.
