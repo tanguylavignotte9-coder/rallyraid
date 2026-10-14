@@ -260,6 +260,17 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${HOST}:${PORT}`);
   try {
     /* ---------- routes SANS session ---------- */
+
+    /* SONDE DU LAUNCHER 1-CLIC — publique par nécessité (le launcher
+       doit savoir si le serveur répond AVANT toute session), minimale
+       par principe (la phase seule : rien de stratégique). Sans elle,
+       le launcher sondait /api/state qui renvoie 401 sans session —
+       Invoke-WebRequest jette, et le navigateur ne s'ouvrait jamais. */
+    if (url.pathname === '/api/health') {
+      sendJSON(res, 200, { ok: true, phase: race.phase });
+      return;
+    }
+
     if (url.pathname === '/api/login' && req.method === 'POST') {
       const body = JSON.parse(await readBody(req)) as { user?: string; pass?: string };
       const s = accounts.login((body.user ?? '').trim(), body.pass ?? '');
@@ -294,7 +305,19 @@ const server = http.createServer(async (req, res) => {
     }
 
     const acc = accounts.byToken(tokenOf(req));
-    if (!acc) { sendJSON(res, 401, { error: 'session requise' }); return; }
+    if (!acc) {
+      /* PAGES (/, /index.html, /spectate.html...) : rediriger vers la
+         connexion plutôt qu'afficher du JSON brut dans le navigateur.
+         Les appels /api/ gardent le 401 JSON — le front JS les gère
+         déjà par sa propre redirection. */
+      if (!url.pathname.startsWith('/api/')) {
+        res.writeHead(302, { location: '/login.html' });
+        res.end();
+        return;
+      }
+      sendJSON(res, 401, { error: 'session requise' });
+      return;
+    }
 
     const me = carOfUser(acc.username);
     touch(me); // toute requête authentifiée compte comme connexion du joueur

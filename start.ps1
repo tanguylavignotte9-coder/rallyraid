@@ -6,23 +6,57 @@ $ErrorActionPreference = "Stop"
 $url = "http://localhost:8787"
 
 function Test-Node {
-  try { node --version | Out-Null; return $true } catch { return $false }
+  # présence ET version : Node < 22.6 plante le serveur silencieusement
+  # (les types .ts ne seraient pas stripés) — le launcher dirait
+  # « ne répond pas » sans expliquer pourquoi.
+  try {
+    $v = node -v 2>$null
+    if (-not $v) { return $false }
+    if ($v -match '^v(\d+)\.(\d+)') {
+      $maj = [int]$Matches[1]; $min = [int]$Matches[2]
+      return ($maj -gt 22) -or ($maj -eq 22 -and $min -ge 6)
+    }
+    return $false
+  } catch { return $false }
 }
 
-if (-not (Test-Node)) {
-  Write-Host "Node.js absent — installation via winget..." -ForegroundColor Yellow
-  winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+function Update-Node {
+  # proposition de mise à jour via winget (même chemin que l'absence)
+  Write-Host "Node.js >= 22.6 requis (version actuelle : $(node -v))" -ForegroundColor Yellow
+  Write-Host "Mise a jour via winget..." -ForegroundColor Yellow
+  winget upgrade --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
   if ($LASTEXITCODE -ne 0) {
-    Write-Host "Echec de winget. Installe Node.js manuellement : https://nodejs.org" -ForegroundColor Red
-    Read-Host "Appuie sur Entree pour fermer"
-    exit 1
+    winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
   }
-  # recharger le PATH de la session courante
   $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
-  if (-not (Test-Node)) {
-    Write-Host "Node installe mais pas accessible — ferme et relance ce script." -ForegroundColor Red
-    Read-Host "Appuie sur Entree pour fermer"
-    exit 1
+}
+
+$hadNode = $false
+try { $hadNode = [bool](node -v 2>$null) } catch { $hadNode = $false }
+if (-not (Test-Node)) {
+  if ($hadNode) {
+    # Node présent mais TROP VIEUX : mise à jour proposée
+    Update-Node
+    if (-not (Test-Node)) {
+      Write-Host "Node.js toujours < 22.6 — mets a jour manuellement : https://nodejs.org" -ForegroundColor Red
+      Read-Host "Appuie sur Entree pour fermer"
+      exit 1
+    }
+  } else {
+    Write-Host "Node.js absent — installation via winget..." -ForegroundColor Yellow
+    winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
+    if ($LASTEXITCODE -ne 0) {
+      Write-Host "Echec de winget. Installe Node.js manuellement : https://nodejs.org" -ForegroundColor Red
+      Read-Host "Appuie sur Entree pour fermer"
+      exit 1
+    }
+    # recharger le PATH de la session courante
+    $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+    if (-not (Test-Node)) {
+      Write-Host "Node installe mais pas accessible — ferme et relance ce script." -ForegroundColor Red
+      Read-Host "Appuie sur Entree pour fermer"
+      exit 1
+    }
   }
 }
 
@@ -34,7 +68,7 @@ $up = $false
 for ($i = 0; $i -lt 30; $i++) {
   Start-Sleep -Seconds 1
   try {
-    Invoke-WebRequest -Uri "$url/api/state" -UseBasicParsing -TimeoutSec 2 | Out-Null
+    Invoke-WebRequest -Uri "$url/api/health" -UseBasicParsing -TimeoutSec 2 | Out-Null
     $up = $true
     break
   } catch {}

@@ -44,7 +44,7 @@ trap 'kill $SERVER_PID 2>/dev/null' EXIT INT TERM
 up=false
 for _ in $(seq 1 30); do
   sleep 1
-  if node -e "fetch('$URL/api/state').then(()=>process.exit(0)).catch(()=>process.exit(1))" 2>/dev/null; then
+  if node -e "fetch('$URL/api/health').then(()=>process.exit(0)).catch(()=>process.exit(1))" 2>/dev/null; then
     up=true; break
   fi
 done

@@ -17,7 +17,7 @@ Ou manuellement :
 npm start          # serveur autoritaire sur http://localhost:8787
 ```
 
-Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français : carte 2D, classement, jauges, journal, éditeur de plan). Le serveur :
+Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français : carte 2D, classement, jauges, journal, éditeur de plan). La page d'accueil redirige vers la connexion si besoin. Le serveur :
 
 - simule la course **en temps réel 1:1** (horloge de Paris), 24 h/24 ;
 - **persiste l'état sur disque** (`server/race-state.json`) : fermer le serveur puis le relancer reprend la course exactement où elle en était (même graine ⇒ même course, ADR 0004) ;
@@ -25,6 +25,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 
 | Endpoint | Rôle |
 |---|---|
+| `GET /api/health` | Sonde du launcher 1-clic — publique, minimale (`{ok, phase}`) |
 | `POST /api/login` / `POST /api/logout` | Session (cookie httpOnly, plusieurs sessions autorisées) |
 | `GET /api/me` | Compte courant : user, niveau, voiture |
 | `GET /api/state` | Classement public + SA voiture en détail ; `hour` (Paris), météo et `pos3` par voiture |
