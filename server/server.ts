@@ -551,6 +551,21 @@ const server = http.createServer(async (req, res) => {
         sendJSON(res, 200, { config: race.config, phase: race.phase, cars: race.cars.length });
         return;
       }
+      if (url.pathname === '/api/admin/depart' && req.method === 'POST') {
+        /* DEPART IMMEDIAT : on ne duplique PAS la logique de départ ici —
+           la boucle temps réel fait déjà tout (drapeau departed, remplissage
+           de la grille pour les absents, addCar auto) dès que
+           now >= startEpochMs. On recule donc l'heure de départ dans le passé
+           et on sauvegarde : le tick suivant donne le départ officiel. */
+        if (race.phase !== 'preparation') {
+          sendJSON(res, 400, { error: 'la course est déjà partie (ou terminée)' });
+          return;
+        }
+        race.config.startEpochMs = Date.now() - 1000;
+        save();
+        sendJSON(res, 200, { ok: true });
+        return;
+      }
       if (url.pathname === '/api/admin/reset' && req.method === 'POST') {
         /* RESET de course — paramètres complets, confirmation par
            bouton côté interface ; ici tout est revalidé */

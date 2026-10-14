@@ -277,6 +277,11 @@ function renderFinish() {
 
 /* ---- configuration de la voiture (première fois) ---- */
 let liveries = { palette: [], taken: [] };
+/* la sélection vit dans cette variable : renderLiveries() reconstruit
+   la grille à chaque poll (1 s) et le DOM est donc effacé en permanence —
+   une sélection portée par le seul DOM est toujours perdue avant validation */
+let selectedColor = null;
+
 async function renderLiveries() {
   const r = await api('/api/liveries');
   if (!r) return;
@@ -285,15 +290,22 @@ async function renderLiveries() {
   box.innerHTML = '';
   for (const col of liveries.palette) {
     const taken = liveries.taken.includes(col);
+    /* ré-applique la sélection précédente si la couleur est toujours
+       libre — la sélection survit aux re-rendus */
+    const stillSel = col === selectedColor && !taken;
+    if (col === selectedColor && taken) {
+      selectedColor = null; /* quelqu'un l'a prise entre-temps */
+    }
     const d = document.createElement('div');
-    d.className = 'swatch' + (taken ? ' taken' : '');
+    d.className = 'swatch' + (taken ? ' taken' : '') + (stillSel ? ' sel' : '');
     d.style.background = col;
     d.title = taken ? 'livrée déjà prise' : '';
+    d.dataset.color = col;
     d.onclick = () => {
       if (taken) return;
+      selectedColor = col;
       for (const s of box.children) s.classList.remove('sel');
       d.classList.add('sel');
-      d.dataset.color = col;
     };
     box.appendChild(d);
   }
@@ -375,12 +387,11 @@ $('personalizeBtn').onclick = async () => {
 
 $('configureBtn').onclick = async () => {
   const name = $('teamName').value.trim();
-  const sel = document.querySelector('#liveryGrid .swatch.sel');
   if (name.length < 2) { $('configureErr').textContent = 'Nom d\'équipe trop court.'; return; }
-  if (!sel) { $('configureErr').textContent = 'Choisissez une livrée.'; return; }
+  if (!selectedColor) { $('configureErr').textContent = 'Choisissez une livrée.'; return; }
   const r = await api('/api/configure', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, color: sel.dataset.color, tire: $('tireChoice').value }),
+    body: JSON.stringify({ name, color: selectedColor, tire: $('tireChoice').value }),
   });
   const d = await r.json();
   if (r.status === 200) { $('configureErr').textContent = ''; poll(); }

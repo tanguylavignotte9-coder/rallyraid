@@ -103,6 +103,8 @@ async function loadRace() {
   $('cfgMaxCars').value = c.maxCars;
   $('racePhase').textContent = d.phase;
   $('raceCars').textContent = d.cars;
+  /* le bouton de départ immédiat n'a de sens qu'en préparation */
+  $('departNow').style.display = d.phase === 'preparation' ? 'block' : 'none';
 }
 
 $('cfgEnd').onchange = () => {
@@ -143,6 +145,19 @@ $('resetForm').addEventListener('submit', async (e) => {
   else err(d.error ?? 'échec du reset');
   loadRace();
 });
+
+$('departNow').onclick = async () => {
+  if (!confirm('Donner le départ maintenant ? La grille est figée et les absents partent avec le plan par défaut.')) return;
+  const r = await api('/api/admin/depart', { method: 'POST' });
+  if (!r) return;
+  if (!r.ok) {
+    const d = await r.json();
+    err(d.error ?? 'départ impossible');
+    return;
+  }
+  err('Départ donné.');
+  loadRace();
+};
 
 $('logoutBtn').onclick = async () => {
   await fetch('/api/logout', { method: 'POST' });
