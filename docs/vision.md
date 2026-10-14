@@ -19,7 +19,7 @@
 
 ### La piste et le moteur (implications techniques)
 - Le générateur doit passer d'une boucle de 20 km à un **itinéraire linéaire généré à la demande** (chunks) — c'est le gros morceau de la Phase 1.
-- **Le duel s'arbitre paire par paire** (la règle de la corde) ; pas de gestion spécifique des paquets ou triples dépassements.
+- **Le duel s'arbitre paire par paire** (la règle de la corde) ; pas de gestion spécifique des paquets ou triples dépassements. **Portée exacte (clarification du 2026-10-14) : strictement deux voitures par duel, en chaîne — voir « Le duel à N voitures et les fautes » ci-dessous.**
 
 ### Le plan stratégique (la « manette » du joueur)
 - **Deux étages** : des **règles conditionnelles générales** (ex. « si fatigue > 70 %, s'arrêter au prochain hôtel ») + des **actions planifiées prioritaires** (ex. « km 850 : pneus »).
@@ -52,6 +52,7 @@
 - **Services à la carte** selon l'offre du point d'intérêt (station = carburant, hôtel = sommeil, garage = mécanique).
 
 ### Le duel à N voitures et les fautes
+- **Strictement des duels à deux — jamais de bataille à trois simultanée** (clarification du 2026-10-14). Le jeu n'arbitre que des duels par paires, en chaîne : si trois voitures se suivent — la 1, la 2 et la 3 — la voiture 1 ne dispute **que** le duel contre la 2, et la voiture 2 **que** le duel contre la 3. Le duel « 1 contre 3 » **n'existe pas**. Deux duels adjacents (1↔2 et 2↔3) peuvent être actifs en même temps, mais ce sont **deux arbitrages indépendants, chacun à deux voitures** — aucune règle ne lit jamais un trio.
 - **Le contact reste interdit en règle, mais peut arriver** — sa fréquence est **systémique** : c'est l'agressivité des stratégies des joueurs qui détermine le taux (des courses prudentes produisent peu de contacts).
 - **L'attribution de la faute suit les règlements sportifs réels de course** :
   - *Attaque à l'intérieur* : l'attaquant doit être maître de sa voiture, ne pas plonger de façon excessive ou brutale, et placer **au minimum son essieu avant à hauteur du rétroviseur** du défenseur **au point de corde** ;
