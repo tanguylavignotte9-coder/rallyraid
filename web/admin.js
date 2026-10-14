@@ -149,6 +149,74 @@ $('logoutBtn').onclick = async () => {
   location.href = '/login.html';
 };
 
+/* ---- explorateur de graines : mini-carte vue de dessus (couleurs par
+   biome), profil d'altitude, stats — calculé par le même code serveur
+   que la course (aucune divergence possible) ---- */
+const BIOME_COLORS = ['#7cb342', '#2e7d32', '#e0a96d', '#90a4ae'];
+const BIOME_NAMES = ['Plaine', 'Forêt', 'Désert', 'Altitude'];
+
+$('seedGo').onclick = loadSeedMap;
+
+async function loadSeedMap() {
+  const seed = Number($('seedProbe').value);
+  const r = await api(`/api/admin/seedmap?seed=${seed}&km=${$('cfgKm').value || 1000}`);
+  if (!r) return;
+  const d = await r.json();
+  drawSeedMap(d);
+  drawSeedAlt(d);
+  const t = d.turns;
+  $('seedStats').innerHTML =
+    `<b>Graine ${d.seed}</b> — ${d.totalKm} km · alt. ${Math.round(d.altMin)}–${Math.round(d.altMax)} m<br>` +
+    `Biomes : ${d.kmBiome.map((k, i) => `${BIOME_NAMES[i]} ${Math.round(k)} km`).join(' · ')}<br>` +
+    `Virages : ${t.epingles} épingles · ${t.serres} serrés · ${t.rapides} rapides — plus longue droite ${t.plusLongueDroite} m<br>` +
+    `POI : ${d.poiPer100km} / 100 km`;
+}
+
+function drawSeedMap(d) {
+  const cv = $('seedMap');
+  cv.style.display = 'block';
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+  const xs = d.pts.map(p => p.x), ys = d.pts.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const sc = Math.min((r.width - 20) / (maxX - minX || 1), (r.height - 20) / (maxY - minY || 1));
+  const px = x => 10 + (x - minX) * sc;
+  const py = y => r.height - 10 - (y - minY) * sc;
+  for (let i = 1; i < d.pts.length; i++) {
+    ctx.strokeStyle = BIOME_COLORS[d.pts[i].b] ?? '#888';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(px(d.pts[i - 1].x), py(d.pts[i - 1].y));
+    ctx.lineTo(px(d.pts[i].x), py(d.pts[i].y));
+    ctx.stroke();
+  }
+}
+
+function drawSeedAlt(d) {
+  const cv = $('seedAlt');
+  cv.style.display = 'block';
+  const r = cv.getBoundingClientRect();
+  cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio;
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  ctx.clearRect(0, 0, r.width, r.height);
+  const hs = d.pts.map(p => p.h);
+  const minH = Math.min(...hs), maxH = Math.max(...hs);
+  const n = d.pts.length;
+  for (let i = 1; i < n; i++) {
+    ctx.strokeStyle = BIOME_COLORS[d.pts[i].b] ?? '#888';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo((i - 1) / n * r.width, r.height - 4 - (d.pts[i - 1].h - minH) / (maxH - minH || 1) * (r.height - 8));
+    ctx.lineTo(i / n * r.width, r.height - 4 - (d.pts[i].h - minH) / (maxH - minH || 1) * (r.height - 8));
+    ctx.stroke();
+  }
+}
+
 loadAccounts();
 loadRace();
 setInterval(loadRace, 10000);

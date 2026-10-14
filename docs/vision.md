@@ -88,6 +88,17 @@
 - **Bulletins d'étape** : toutes les 3 h (constante exportée), biomes et météo des prochains tronçons — déterministes, lus sur l'état de la course.
 - **CB de proximité** : canal global unique, anti-flood 1 message/5 s ; chaque équipe ne reçoit que les messages des équipes à ≤ 100 km. Bandeau direct + journal.
 
+### Le monde et le tracé (design du 2026-10-14, mis en œuvre)
+
+- **Chaque biome a son CARACTÈRE de tracé** — la géométrie change, pas seulement μ/crr :
+  - *Plaine* : asphalte, route large, rythme fluide — le royaume du duel ;
+  - *Forêt* : revêtement terre (μ plus bas même à sec), virages serrés et « aveugles », brume ;
+  - *Désert* : longues droites VALLONNÉES (la dune creuse la pointe — le profil fait varier la vitesse en pleine ligne droite), sable, larges sections ;
+  - *Altitude* : route ÉTROITE à 1 file (le duel côte à côte y est physiquement impossible — la garde anti-collision sépare en LONG), pierre, lacets marqués, PONTS sur les ravins et TUNNELS sous la roche (données du tracé par sample : terrain qui s'écarte du tracé, déterministes et régénérables à l'identique).
+- **L'altitude suit le biome** : amplitude de relief par biome (le désert vallonne, l'altitude grimpe vers les cols), retour à la moyenne conservé.
+- **Explorateur de graines** (page admin) : mini-carte vue de dessus, couleurs par biome, profil d'altitude, km par biome, virages par catégorie, densité POI — calculé par le MÊME code de génération que la course, puis l'admin lance le reset avec cette graine.
+- **Fenêtre de préparation** (joueur) : carte complète + profil d'altitude + bandes de biomes le long de la course, un seul graphique mobile first ; POI non marqués.
+
 ## Questions encore ouvertes (équilibrage, à trancher en jeu)
 
 - Paramètres exacts : plafond nuit (−X % ?), durées stop-and-go et amendes, seuils et taux du RNG de contact, formule du bonus de régularité, couplage dégradation/risque de la fatigue.

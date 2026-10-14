@@ -42,6 +42,8 @@ export type Chunk = {
   xs: Float64Array;          // plan (m), relatif à l'entrée du chunk
   zs: Float64Array;
   h: Float64Array;           // altitude (m), absolue
+  terr: Float64Array;        // altitude du TERRAIN environnant (pont/tunnel)
+  segType: Float64Array;     // 0 sol · 1 pont · 2 tunnel (par sample)
   w: Float64Array;           // demi-largeur de chaussée (m)
   mua: Float64Array;         // grip du biome
   crrA: Float64Array;        // roulement du biome
@@ -102,6 +104,38 @@ export function biomeBlendR(rt: Route, gi: number): { a: number; b: number; t: n
   return { a: seg.b, b: segs[Math.min(lo + 1, segs.length - 1)].b, t: 1 - d / BLEND };
 }
 
+/* ============================================================
+   CARACTÈRE DU TRACÉ PAR BIOME (design du 2026-10-14)
+   ============================================================
+   La GÉOMÉTRIE change par biome, pas seulement μ/crr :
+   - PLAINE  : asphalte, route large, rythme fluide — le royaume du duel ;
+   - FORÊT  : revêtement terre, virages serrés et « aveugles », brume ;
+   - DÉSERT  : longues droites VALLONNÉES (la dune creuse la pointe),
+               sable (μ réduit, crr accru), larges sections ;
+   - ALTITUDE: route ÉTROITE à 1 file (le duel côte à côte y est
+               physiquement impossible), pierre, cols marqués avec
+               LACETS, PONTS sur les ravins et TUNNELS sous la roche.
+   Largeurs en demi-chaussée (m) — constants exportés, l'équilibrage
+   se fera en course test. */
+
+/* demi-largeur de chaussée par biome (m) : plaine/désert larges,
+   forêt moyenne, altitude ÉTROITE — 1,6 m : deux voitures ne
+   tiennent pas côte à côte (CAR_D = 2,05 m) */
+export const BIOME_W = [3.75, 3.0, 3.6, 1.6];
+/* modulation de grip du REVÊTEMENT (× biome μ) : terre en forêt,
+   sable au désert, pierre en altitude — μ plus bas même à sec */
+export const BIOME_SURF_MU = [1.0, 0.9, 0.9, 0.92];
+/* rugosité du revêtement (× crr du biome) */
+export const BIOME_SURF_CRR = [1.0, 1.25, 1.15, 1.1];
+/* amplitude du relief (× le gradient de bruit) : le désert VALLONNE,
+   l'altitude grimpe vers les cols */
+export const BIOME_RELIEF = [1.0, 1.2, 2.2, 2.6];
+/* écart d'altitude du TERRAIN environnant vs tracé : ravin sous un
+   pont, roche au-dessus d'un tunnel (données du tracé, déterministes) */
+export const SEG_GROUND = 0;    // route au sol
+export const SEG_BRIDGE = 1;    // pont : terrain = tracé - ravin
+export const SEG_TUNNEL = 2;    // tunnel : terrain = tracé + roche
+
 /* ---- densité des POI par biome (km d'espacement de base × facteur) ---- */
 const POI_BASE: Record<PoiKind, number> = { station: 30, hotel: 90, garage: 120 };
 const POI_BIOME = [0.8, 1.0, 2.6, 1.4]; // plaine riche · désert vide
@@ -136,9 +170,13 @@ export function buildChunk(rt: Route, k: number): Chunk {
     const t = bz.t;
     const lerp = (p: number, q: number) => p + (q - p) * t;
     biome[i] = bz.a + bz.t;
-    w[i] = lerp(A.w, B.w);
-    mua[i] = lerp(A.mu, B.mu);
-    crrA[i] = lerp(A.crr, B.crr);
+    /* largeur par biome (BIOME_W) — l'altitude ÉTROITE à 1,6 m rend le
+       duel côte à côte physiquement impossible : la garde
+       anti-collision sépare en LONG */
+    w[i] = lerp(BIOME_W[bz.a], BIOME_W[bz.b]);
+    /* revêtement : modulation μ/crr du sol (terre/sable/pierre) */
+    mua[i] = lerp(A.mu * BIOME_SURF_MU[bz.a], B.mu * BIOME_SURF_MU[bz.b]);
+    crrA[i] = lerp(A.crr * BIOME_SURF_CRR[bz.a], B.crr * BIOME_SURF_CRR[bz.b]);
     grad[i] = lerp(A.grad, B.grad);
   }
 
@@ -166,24 +204,33 @@ export function buildChunk(rt: Route, k: number): Chunk {
     const zone = biomeBlendR(rt, k * RSAMP + Math.min(pi, RSAMP - 1)).a;
     const u = rand();
     let kind: string;
+    /* MENUS par biome — le CARACTÈRE du tracé (design 2026-10-14) :
+       plaine : fluide (grands courants, peu d'épingles) ;
+       forêt : serré et « aveugle » — davantage de PETITS que de grands ;
+       désert : LONGUES DROITES (jusqu'à ~0,5 km) ;
+       altitude : lacets — épingles et S en grande courbure dominants. */
     if (zone === 0) kind = u < 0.42 ? 'droite' : u < 0.86 ? 'grand' : 's';
-    else if (zone === 1) kind = u < 0.14 ? 'droite' : u < 0.52 ? 'petit' : u < 0.84 ? 's' : 'epingle';
-    else if (zone === 2) kind = u < 0.5 ? 'droite' : u < 0.9 ? 'grand' : 'petit';
-    else kind = u < 0.1 ? 'droite' : u < 0.42 ? 'petit' : u < 0.74 ? 's' : 'epingle';
+    else if (zone === 1) kind = u < 0.10 ? 'droite' : u < 0.62 ? 'petit' : u < 0.88 ? 's' : 'epingle';
+    else if (zone === 2) kind = u < 0.55 ? 'droite' : u < 0.92 ? 'grand' : 'petit';
+    else kind = u < 0.06 ? 'droite' : u < 0.30 ? 'petit' : u < 0.70 ? 's' : 'epingle';
     if (kind === 'droite') {
+      /* désert : la dune creuse la pointe — droites de 208 à 496 m */
       writeStraight(zone === 2 ? 26 + Math.floor(rand() * 36) : 10 + Math.floor(rand() * 20));
     } else if (kind === 'grand') {
       writeCorner(1 / (280 + rand() * 280), 12 + Math.floor(rand() * 18), dir());
     } else if (kind === 'petit') {
-      writeCorner(1 / (140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
+      /* forêt : serré ; altitude : pierre — même courbure, plus vif */
+      writeCorner(1 / (zone === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
     } else if (kind === 's') {
-      const cvS = 1 / (150 + rand() * 130);
+      const cvS = 1 / (zone === 3 ? 90 + rand() * 70 : 150 + rand() * 130);
       const lS = 7 + Math.floor(rand() * 8);
       const sgn = dir();
       writeCorner(cvS, lS, sgn);
       writeCorner(cvS, lS, -sgn);
     } else {
-      writeCorner(1 / (30 + rand() * 30), 6 + Math.floor(rand() * 8), dir());
+      /* LACETS d'altitude : épingle franche (R 30-60 m), plus longue en
+         altitude pour dessiner le lacet du col */
+      writeCorner(1 / (30 + rand() * 30), zone === 3 ? 8 + Math.floor(rand() * 10) : 6 + Math.floor(rand() * 8), dir());
     }
   }
   writeStraight(RSAMP - pi);
@@ -205,7 +252,18 @@ export function buildChunk(rt: Route, k: number): Chunk {
   h[0] = e.h;
   const inc = new Float64Array(RSAMP);
   const H_PULL = 2e-6; // retour à la moyenne : σ stationnaire ≈ 150 m
-  for (let i = 0; i < RSAMP; i++) inc[i] = grad[i] * noise2(i * 0.02) * SEG;
+  /* le RELIEF suit le biome : le désert VALLONNE (la dune creuse la
+     pointe en pleine ligne droite), l'altitude grimpe vers les cols.
+     L'amplitude (BIOME_RELIEF) module le gradient fondu par échantillon. */
+  const relief = new Float64Array(RSAMP);
+  for (let i = 0; i < RSAMP; i++) {
+    const bz = biomeBlendR(rt, k * RSAMP + i);
+    relief[i] = bz.a + (bz.b - bz.a) * bz.t;
+  }
+  for (let i = 0; i < RSAMP; i++) {
+    const rA = BIOME_RELIEF[Math.floor(relief[i])] ?? 1;
+    inc[i] = grad[i] * rA * noise2(i * 0.02) * SEG;
+  }
   const incS = new Float64Array(RSAMP);
   const KI = 4;
   for (let i = 0; i < RSAMP; i++) {
@@ -251,7 +309,39 @@ export function buildChunk(rt: Route, k: number): Chunk {
   };
   rt.poiCur[k + 1] = cursor;
 
-  return { k, s0, hd, xs, zs, h, w, mua, crrA, biome, pois };
+  /* ---- PONTS et TUNNELS (altitude) : données du tracé par sample.
+     En zone d'altitude, quand le tracé plonge (ravin) il passe sur un
+     PONT — le terrain s'en écarte vers le bas ; quand il traverse une
+     crête, un TUNNEL — le terrain monte au-dessus. Déterministe
+     (PRNG du chunk), continu aux frontières (les segments sont
+     intérieurs au chunk, jamais à cheval). ---- */
+  const terr = new Float64Array(RSAMP);
+  const segType = new Float64Array(RSAMP);
+  for (let i = 0; i < RSAMP; i++) {
+    const bz = biomeBlendR(rt, k * RSAMP + i);
+    if (bz.a !== 3 && bz.b !== 3) { terr[i] = h[i]; segType[i] = SEG_GROUND; continue; }
+    const slope = i > 0 ? (h[i] - h[i - 1]) / SEG : 0;
+    /* tirage STABLE par (chunk, sample) — jamais un PRNG partagé qui
+       dépendrait de l'ordre d'appel (déterminisme à la régénération) */
+    const r = mulberry32(((rt.seed ^ 0x62726964) | 0) + Math.imul(k * RSAMP + i + 1, 2246822519) | 0)();
+    /* pont sur les ravins (forte descente), tunnel sous les crêtes
+       (forte montée) — seuils bas : ces passages sont FRÉQUENTS en
+       altitude, c'est le caractère du biome (design 2026-10-14) */
+    const isBridge = slope < -0.025 && r > 0.90;
+    const isTunnel = slope > 0.02 && r > 0.90;
+    if (isBridge) {
+      segType[i] = SEG_BRIDGE;
+      terr[i] = h[i] - 35 - (i % 12); // ravin visible sous l'arche
+    } else if (isTunnel) {
+      segType[i] = SEG_TUNNEL;
+      terr[i] = h[i] + 40 + (i % 10); // roche au-dessus de la voûte
+    } else {
+      segType[i] = SEG_GROUND;
+      terr[i] = h[i];
+    }
+  }
+
+  return { k, s0, hd, xs, zs, h, terr, segType, w, mua, crrA, biome, pois };
 }
 
 /* ---- génération à la demande : les chunks se construisent EN ORDRE

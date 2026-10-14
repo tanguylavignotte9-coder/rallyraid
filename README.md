@@ -36,6 +36,8 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 | `GET /api/cars` | Liste des participants (super/admin) |
 | `POST /api/admin/accounts` · `/api/admin/reset-pass` · `/api/admin/level` · `/api/admin/disable` | Gestion des comptes (admin) |
 | `GET/POST /api/admin/reset` | Paramètres et reset de course (admin) |
+| `GET /api/admin/seedmap?seed=&km=` | Explorateur de graines : carte + profil + stats (admin) |
+| `GET /api/profile` | Carte complète + profil d'altitude (préparation) |
 
 Toutes les routes API (et les pages de jeu) exigent une session valide — 401 sinon.
 

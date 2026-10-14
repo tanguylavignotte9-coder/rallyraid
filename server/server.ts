@@ -23,6 +23,7 @@ import {
   TIRES, CB_RANGE_KM, CB_MIN_INTERVAL_S,
   type Plan, type Race, type RaceCar, type RaceConfig, type TireKind,
 } from '../core/race.ts';
+import { makeRoute, routeTrack } from '../core/route.ts';
 import { AccountStore, hashPassword, randomPassword, type Level } from './accounts.ts';
 
 const PORT = Number(process.env.RALLY_PORT ?? 8787);
@@ -292,6 +293,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/api/profile') {
+      /* carte complète + profil d'altitude pour la fenêtre de
+         préparation (POI NON marqués — design 2026-10-14). Calculé par
+         le même code de génération que la course. En course, limité
+         à la fenêtre devant le joueur (l'information est le métier). */
+      const myS = me ? me.s : 0;
+      const full = race.phase === 'preparation';
+      const from = full ? 0 : myS;
+      const len = full ? race.trk.finishS : 60_000;
+      const step = Math.max(500, len / 300);
+      const pts: { x: number; y: number; h: number; b: number; s: number }[] = [];
+      for (let s = from; s < Math.min(from + len, race.trk.finishS); s += step) {
+        const p = race.trk.roadPoint(s);
+        pts.push({ x: p.x, y: p.y, h: race.trk.heightAt(s), b: Math.floor(race.trk.biomeAt(s)), s });
+      }
+      sendJSON(res, 200, { pts, finishS: race.trk.finishS, phase: race.phase });
+      return;
+    }
+
     if (url.pathname === '/api/liveries') {
       /* livrées encore disponibles pour SA configuration */
       sendJSON(res, 200, {
@@ -426,6 +446,48 @@ const server = http.createServer(async (req, res) => {
         snapshot = buildSnapshot();
         save();
         sendJSON(res, 200, { ok: true, phase: race.phase });
+        return;
+      }
+      /* EXPLORATEUR DE GRAINES : carte complète + stats, calculées par le
+         MÊME code de génération que la course (aucune divergence
+         possible) — l'admin choisit sa graine puis lance le reset */
+      if (url.pathname === '/api/admin/seedmap' && req.method === 'GET') {
+        const seed = Number(url.searchParams.get('seed') ?? 42);
+        const totalKm = Math.min(5000, Math.max(50, Number(url.searchParams.get('km') ?? race.totalKm)));
+        const rt = makeRoute(seed, totalKm);
+        const trk = routeTrack(rt);
+        /* un point tous les ~2 km (vue de dessus + altitude + biome) */
+        const step = 2000;
+        const pts: { x: number; y: number; h: number; b: number }[] = [];
+        for (let s = 0; s < rt.finishS; s += step) {
+          const p = trk.roadPoint(s);
+          pts.push({ x: p.x, y: p.y, h: trk.heightAt(s), b: Math.floor(trk.biomeAt(s)) });
+        }
+        /* km par biome */
+        const kmBiome = [0, 0, 0, 0];
+        for (const p of pts) kmBiome[p.b] += step / 1000;
+        /* virages par catégorie : échantillonnage de la courbure */
+        let epingles = 0, serres = 0, rapides = 0;
+        let maxRun = 0, run = 0;
+        for (let s = 0; s < rt.finishS; s += 8) {
+          const cv = Math.abs(trk.cvAt(s));
+          if (cv > 0.02) epingles++;
+          else if (cv > 0.005) serres++;
+          else if (cv > 0.001) rapides++;
+          if (cv < 1e-4) { run += 8; if (run > maxRun) maxRun = run; } else run = 0;
+        }
+        /* densité POI (même curseur que la course, sans voitures) */
+        let nPoi = 0;
+        for (let s = 0; s < rt.finishS; s += 1000) {
+          for (const p of trk.poisAhead(s, 1000)) nPoi++;
+        }
+        sendJSON(res, 200, {
+          seed, totalKm, pts, kmBiome,
+          turns: { epingles, serres, rapides, plusLongueDroite: maxRun },
+          poiPer100km: +(nPoi / (totalKm / 100)).toFixed(1),
+          altMin: Math.min(...pts.map((p) => p.h)),
+          altMax: Math.max(...pts.map((p) => p.h)),
+        });
         return;
       }
       sendJSON(res, 404, { error: 'route admin inconnue' });

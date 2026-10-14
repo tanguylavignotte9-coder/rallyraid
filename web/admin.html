@@ -69,6 +69,17 @@
       <p class="mut">Phase : <span id="racePhase">—</span> · Voitures : <span id="raceCars">—</span></p>
     </div>
     <div class="panel">
+      <h2>Explorateur de graines</h2>
+      <p class="mut" style="margin-bottom:8px">Même génération que la course — prévisualisez le tracé avant le reset.</p>
+      <div class="frow">
+        <div><label>Graine à explorer</label><input id="seedProbe" type="number" value="42"></div>
+        <div><label>&nbsp;</label><button id="seedGo" style="width:100%;background:#0b0f14;color:var(--txt);border:1px solid var(--line);border-radius:5px;padding:7px;cursor:pointer">Explorer</button></div>
+      </div>
+      <canvas id="seedMap" style="width:100%;height:180px;background:#0b0f14;border-radius:6px;display:none"></canvas>
+      <canvas id="seedAlt" style="width:100%;height:80px;background:#0b0f14;border-radius:6px;display:none"></canvas>
+      <div id="seedStats" class="mut" style="margin-top:6px"></div>
+    </div>
+    <div class="panel">
       <h2>Reset de course — paramètres</h2>
       <form id="resetForm">
         <div class="frow">

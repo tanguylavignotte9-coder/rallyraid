@@ -186,6 +186,7 @@ function render() {
     const left = Math.max(0, snap.startEpochMs - Date.now());
     $('countdown').textContent = `Départ dans ${fmtDur(left / 1000)}`;
     show('view-prep');
+    drawProfile();
   } else {
     show('view-race');
   }
@@ -293,6 +294,66 @@ async function renderLiveries() {
     };
     box.appendChild(d);
   }
+}
+
+/* ---- fenêtre de préparation : carte complète + profil d'altitude +
+   bandes de biomes (un seul graphique clair, mobile first ; POI non
+   marqués — design 2026-10-14) ---- */
+const BIOME_COLORS = ['#7cb342', '#2e7d32', '#e0a96d', '#90a4ae'];
+const BIOME_NAMES = ['Plaine', 'Forêt', 'Désert', 'Altitude'];
+let profData = null;
+
+async function drawProfile() {
+  const r = await api('/api/profile');
+  if (!r) return;
+  profData = await r.json();
+  if (profData.phase !== 'preparation') return;
+  const d = profData;
+  // carte vue de dessus
+  const cv = $('profMap'), ctx = cv.getContext('2d');
+  const rect = cv.getBoundingClientRect();
+  cv.width = rect.width * devicePixelRatio; cv.height = rect.height * devicePixelRatio;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  const xs = d.pts.map(p => p.x), ys = d.pts.map(p => p.y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const sc = Math.min((rect.width - 20) / (maxX - minX || 1), (rect.height - 20) / (maxY - minY || 1));
+  for (let i = 1; i < d.pts.length; i++) {
+    ctx.strokeStyle = BIOME_COLORS[d.pts[i].b] ?? '#888';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(10 + (d.pts[i - 1].x - minX) * sc, rect.height - 10 - (d.pts[i - 1].y - minY) * sc);
+    ctx.lineTo(10 + (d.pts[i].x - minX) * sc, rect.height - 10 - (d.pts[i].y - minY) * sc);
+    ctx.stroke();
+  }
+  // profil d'altitude avec bandes de biome
+  const av = $('profAlt'), actx = av.getContext('2d');
+  const arect = av.getBoundingClientRect();
+  av.width = arect.width * devicePixelRatio; av.height = arect.height * devicePixelRatio;
+  actx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  const hs = d.pts.map(p => p.h);
+  const minH = Math.min(...hs), maxH = Math.max(...hs);
+  const n = d.pts.length;
+  // bandes de biome
+  for (let i = 1; i < n; i++) {
+    actx.fillStyle = (BIOME_COLORS[d.pts[i].b] ?? '#555') + '44';
+    actx.fillRect((i - 1) / n * arect.width, 0, arect.width / n + 1, arect.height);
+  }
+  // ligne d'altitude
+  actx.strokeStyle = '#dce3ec';
+  actx.lineWidth = 1.5;
+  actx.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = i / n * arect.width;
+    const y = arect.height - 6 - (d.pts[i].h - minH) / (maxH - minH || 1) * (arect.height - 12);
+    i === 0 ? actx.moveTo(x, y) : actx.lineTo(x, y);
+  }
+  actx.stroke();
+  // légende
+  const kmB = [0, 0, 0, 0];
+  for (let i = 1; i < n; i++) kmB[d.pts[i].b] += (d.pts[i].s - d.pts[i - 1].s) / 1000;
+  $('profLegend').innerHTML = kmB.map((k, i) =>
+    `<span style="color:${BIOME_COLORS[i]}">■</span> ${BIOME_NAMES[i]} ${Math.round(k)} km`).join(' · ');
 }
 
 $('configureBtn').onclick = async () => {
