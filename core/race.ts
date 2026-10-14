@@ -44,6 +44,50 @@ export const ROADSIDE_EFF = 0.5;     // récupération de moitié
 export const POI_SEARCH_M = 200_000;  // recherche du prochain point d'arrêt
 export const EVENTS_MAX = 60;
 
+/* ---- Paramétrage d'une course (page admin) : tout réglage a sa
+   constante exportée nommée — l'équilibrage se règle en course test,
+   jamais en dur dans la boucle (vision : « ces réglages se feront en
+   condition réelle »). ---- */
+export const MAX_CARS = 40;          // grille : premiers arrivés
+export const SURVIVAL_DEFAULT_H = 24; // arrêt de survie sans connexion (h)
+export const NIGHT_MODE_MUL = 'mul';  // 'mul' : multiplicateur · 'cap' : plafond km/h
+export const NIGHT_MODE_CAP = 'cap';
+export const NIGHT_CAP_KMH = 110;    // plafond nuit si mode 'cap'
+
+export type NightMode = 'mul' | 'cap';
+
+export type RaceConfig = {
+  seed: number;
+  totalKm: number;
+  startEpochMs: number;     // date/heure réelle de départ (Paris affiché)
+  prepMinutes: number;       // fenêtre de préparation avant départ
+  endType: 'distance' | 'duration';
+  endHours: number;         // durée de course si endType = 'duration'
+  survivalHours: number;    // sans connexion → arrêt au POI (arrêt de survie)
+  poiDensity: number;       // multiplicateur de densité des POI (1 = nominal)
+  nightMode: NightMode;     // forme de la bride de nuit
+  nightValue: number;       // ×0,85 en mode mul, km/h en mode cap
+  maxCars: number;
+};
+
+export const DEFAULT_CONFIG: RaceConfig = {
+  seed: 42,
+  totalKm: 1000,
+  startEpochMs: Date.now(),
+  prepMinutes: 60,
+  endType: 'distance',
+  endHours: 24 * 7,
+  survivalHours: SURVIVAL_DEFAULT_H,
+  poiDensity: 1,
+  nightMode: NIGHT_MODE_MUL,
+  nightValue: NIGHT_CAP,
+  maxCars: MAX_CARS,
+};
+
+/* ---- Déroulé de course : préparation (compte à rebours, grille
+   ouverte) → course → fin (podium figé jusqu'au reset). ---- */
+export type RacePhase = 'preparation' | 'racing' | 'finished';
+
 export type PlanAction =
   | { id: number; type: 'refuel' | 'sleep' | 'repair'; atKm?: number }
   | { id: number; type: 'refuel'; ifTag: 'fuelLow'; threshold: number }
@@ -70,6 +114,9 @@ export type RaceCar = KinCar & {
   plan: Plan;
   finishedAt: number | null;
   events: RaceEvent[];
+  owner: string | null;      // compte joueur propriétaire (null = non attribuée)
+  lastSeenSimT: number;      // dernière connexion de SON joueur (arrêt de survie)
+  survivalStop: boolean;     // vrai pendant l'arrêt de survie POI
 };
 
 export type Race = {
@@ -83,6 +130,10 @@ export type Race = {
   startEpochMs: number; // epoch réelle correspondant à simT = 0
   timeScale: number;
   finished: boolean;
+  config: RaceConfig;
+  phase: RacePhase;      // préparation → course → fin
+  departed: boolean;     // vrai dès que le départ a été donné (horloge serveur)
+  endSimT: number;       // fin par durée (secondes sim)
 };
 
 let planIdNext = 1;
@@ -112,15 +163,27 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
     plan: defaultPlan(id),
     finishedAt: null,
     events: [],
+    owner: null,
+    lastSeenSimT: 0,
+    survivalStop: false,
   };
 }
 
-export function makeRace(seed: number, totalKm: number, timeScale = 1, startEpochMs = Date.now()): Race {
-  const route = makeRoute(seed, totalKm);
+export function makeRace(cfg: RaceConfig, timeScale = 1): Race {
+  const route = makeRoute(cfg.seed, cfg.totalKm, cfg.poiDensity);
   return {
-    seed, totalKm, route, trk: routeTrack(route),
+    seed: cfg.seed, totalKm: cfg.totalKm, route, trk: routeTrack(route),
     cars: [], simT: 0, doneSteps: 0,
-    startEpochMs, timeScale, finished: false,
+    startEpochMs: cfg.startEpochMs, timeScale, finished: false,
+    config: cfg,
+    /* phase initiale : PREPARATION si le départ est dans le futur, course
+       sinon — MAIS la transition ne se fait que par horloge du SERVEUR
+       (jamais Date.now() dans le cœur déterministe : un replay ou un test
+       qui reconstruit la course au bit près doit retrouver la même phase ;
+       c'est stepRace qui reçoit l'info « départ passé ») */
+    phase: 'preparation',
+    departed: false,
+    endSimT: cfg.endType === 'duration' ? cfg.endHours * 3600 : Infinity,
   };
 }
 
@@ -150,8 +213,15 @@ export function parisClock(race: Race): string {
   }).format(d);
 }
 
-function nightMul(hour: number): number {
-  return hour >= 22 || hour < 6 ? NIGHT_CAP : 1;
+/* bride de nuit — FORME paramétrable (admin) : multiplicateur ×0,85 ou
+   plafond km/h ; la fenêtre 22 h → 6 h (Paris) ne change pas */
+function nightCap(race: Race, hour: number): number {
+  const night = hour >= 22 || hour < 6;
+  if (!night) return V_CAP;
+  if (race.config.nightMode === NIGHT_MODE_CAP) {
+    return Math.min(V_CAP, race.config.nightValue / 3.6);
+  }
+  return V_CAP * race.config.nightValue;
 }
 
 function fatigueMul(fatigue: number): number {
@@ -184,6 +254,9 @@ function engageStop(race: Race, car: RaceCar, kind: PoiKind, hours: number) {
 }
 
 function endStop(race: Race, car: RaceCar) {
+  /* arrêt de survie : figé jusqu'à la reconnexion de SON joueur —
+     aucun service ne s'applique, aucun faux message de reprise */
+  if (car.survivalStop) return;
   if (car.stopKind === 'station') {
     car.fuel = TANK_L;
     log(car, race.simT, `Plein fait (${TANK_L} L) — repart`);
@@ -202,6 +275,18 @@ function endStop(race: Race, car: RaceCar) {
   car.st = 'run';
   car.stopKind = null;
   car.targetS = null;
+}
+
+/* reconnexion du joueur : lève l'arrêt de survie (la voiture repart) */
+export function wakeSurvival(race: Race, car: RaceCar) {
+  if (!car.survivalStop) return;
+  car.survivalStop = false;
+  car.stopKind = null;
+  car.targetS = null;
+  car.stopUntil = 0;
+  car.st = 'run';
+  car.lastSeenSimT = race.simT;
+  log(car, race.simT, 'Reconnexion du pilote — reprise de la route');
 }
 
 function evalPlan(race: Race, car: RaceCar) {
@@ -292,6 +377,29 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
     return info;
   }
 
+  /* ARRÊT DE SURVIE (vision, amendement ADR 0002) : sans connexion de
+     SON joueur depuis config.survivalHours, la voiture s'arrête au
+     prochain POI (station de préférence) et ne repart qu'à SA
+     reconnexion. Distinct de l'arrêt bord de route pour fatigue. */
+  if (!car.survivalStop && race.phase === 'racing' && car.owner !== null
+      && race.simT - car.lastSeenSimT > race.config.survivalHours * 3600) {
+    const kinds: PoiKind[] = ['station', 'hotel', 'garage'];
+    let engaged = false;
+    for (const k of kinds) {
+      if (engageStop(race, car, k, 0)) { engaged = true; break; }
+    }
+    if (engaged) {
+      car.survivalStop = true;
+      log(car, race.simT, 'ARRÊT DE SURVIE — joueur absent, la voiture dort à un point d\'arrêt');
+    } else {
+      car.survivalStop = true;
+      car.st = 'stop';
+      car.stopKind = 'roadside';
+      car.v = 0;
+      car.stopUntil = Infinity;
+      log(car, race.simT, 'ARRÊT DE SURVIE — joueur absent, arrêt en bord de route (aucun POI)');
+    }
+  }
   if (car.fatigue > FATIGUE_EMERG_H) {
     car.st = 'stop';
     car.stopKind = 'roadside';
@@ -304,7 +412,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   car.pwr = car.plan.power;
   evalPlan(race, car);
 
-  const cap = V_CAP * nightMul(hour) * fatigueMul(car.fatigue);
+  const cap = nightCap(race, hour) * fatigueMul(car.fatigue);
   const draft = front ? draftMul(car, front) : 1;
   const vT = speedTarget(trk, car.s, cap, 0.75);
   driveStep(trk, car, vT, dt, draft);
@@ -360,6 +468,19 @@ function resolvePairs(race: Race) {
 
 export function stepRace(race: Race, nSteps: number) {
   for (let n = 0; n < nSteps; n++) {
+    /* déroulé : preparation = compte à rebours réel ; on ne simule pas
+       encore ; racing = simulation ; finished = figé (jusqu'au reset) */
+    if (race.phase === 'preparation') {
+      /* départ donné si la date réelle a passé startEpochMs — testé par
+         le SERVEUR (déterminisme : le cœur ne lit jamais l'horloge) */
+      if (race.departed) {
+        race.phase = 'racing';
+        for (const c of race.cars) c.lastSeenSimT = 0;
+      } else {
+        return;
+      }
+    }
+    if (race.phase === 'finished') return;
     race.simT = (race.doneSteps + 1) * DT;
     race.doneSteps++;
     const hour = parisHour(race);
@@ -367,6 +488,20 @@ export function stepRace(race: Race, nSteps: number) {
     resolvePairs(race);
     if (!race.finished && race.cars.length > 0 && race.cars.every((c) => c.st === 'finish')) {
       race.finished = true;
+      race.phase = 'finished';
+    }
+    /* fin par DURÉE : les non-arrivés sont classés au kilomètre atteint */
+    if (race.phase === 'racing' && race.simT >= race.endSimT) {
+      race.finished = true;
+      race.phase = 'finished';
+      for (const c of race.cars) {
+        if (c.st !== 'finish') {
+          c.st = 'finish';
+          c.v = 0;
+          c.finishedAt = race.simT;
+          log(c, race.simT, 'Fin de course (durée) — classé au kilomètre atteint');
+        }
+      }
     }
   }
 }
@@ -381,9 +516,12 @@ export function rankCars(race: Race): RaceCar[] {
 }
 
 type SerializedCar = Omit<RaceCar, never>;
-type SerializedRace = Pick<Race, 'seed' | 'totalKm' | 'simT' | 'doneSteps' | 'startEpochMs' | 'timeScale' | 'finished'> & {
+type SerializedRace = Pick<Race, 'seed' | 'totalKm' | 'simT' | 'doneSteps' | 'startEpochMs' | 'timeScale' | 'finished' | 'endSimT'> & {
   cars: (SerializedCar & { plan: Plan })[];
   nextPlanId: number;
+  config: RaceConfig;
+  phase: RacePhase;
+  departed: boolean;
 };
 
 export function serializeRace(race: Race): string {
@@ -395,6 +533,10 @@ export function serializeRace(race: Race): string {
     startEpochMs: race.startEpochMs,
     timeScale: race.timeScale,
     finished: race.finished,
+    endSimT: race.endSimT,
+    config: race.config,
+    phase: race.phase,
+    departed: race.departed,
     cars: race.cars.map((c) => ({ ...c })),
     nextPlanId: planIdNext,
   } satisfies SerializedRace);
@@ -402,12 +544,15 @@ export function serializeRace(race: Race): string {
 
 export function deserializeRace(raw: string): Race {
   const d = JSON.parse(raw) as SerializedRace;
-  const race = makeRace(d.seed, d.totalKm, d.timeScale, d.startEpochMs);
+  const race = makeRace({ ...DEFAULT_CONFIG, ...d.config, startEpochMs: d.startEpochMs, seed: d.seed, totalKm: d.totalKm }, d.timeScale);
   race.simT = d.simT;
   race.doneSteps = d.doneSteps;
   race.finished = d.finished;
+  race.phase = d.phase ?? (d.simT > 0 ? 'racing' : 'preparation');
+  race.departed = d.departed ?? race.phase !== 'preparation';
+  race.endSimT = d.endSimT ?? Infinity;
   race.cars = d.cars.map((c) => ({ ...c })) as RaceCar[];
-  planIdNext = d.nextPlanId ?? 1000;
+  planIdNext = Math.max(planIdNext, d.nextPlanId ?? 1000);
   return race;
 }
 

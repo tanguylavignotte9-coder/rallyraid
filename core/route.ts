@@ -58,6 +58,7 @@ export type PoiCursor = Record<PoiKind, number>; // prochain POI pend. par type
 
 export type Route = {
   seed: number;
+  poiDensity: number;
   totalKm: number;
   finishS: number;           // abscisse d'arrivée (m)
   nChunks: number;
@@ -227,6 +228,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
 
   /* ---- POI : le curseur global de chaque type avance dans le chunk ---- */
   const cursor: PoiCursor = { ...rt.poiCur[k] };
+  const poiDensity = rt.poiDensity ?? 1;
   const end = s0 + RCHUNK;
   const pois: Poi[] = [];
   for (const kind of POI_KINDS) {
@@ -234,7 +236,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
     while (s < end) {
       if (s >= s0) pois.push({ s: Math.floor(s / SEG) * SEG, kind });
       const fac = POI_BIOME[biomeBlendR(rt, s / SEG).a];
-      s += POI_BASE[kind] * 1000 * fac * (0.7 + 0.6 * rand());
+      s += (POI_BASE[kind] * 1000 / Math.max(0.2, poiDensity)) * fac * (0.7 + 0.6 * rand());
     }
     cursor[kind] = s;
   }
@@ -275,7 +277,10 @@ export function ensureChunk(rt: Route, k: number): Chunk {
   return c;
 }
 
-export function makeRoute(seed: number, totalKm: number): Route {
+/* densité des POI : la course la reçoit du paramétrage admin (page
+   admin) — les espacements de base sont divisés par le facteur (2 =
+   deux fois plus dense), bornés à la construction, déterministes */
+export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route {
   const nChunks = Math.ceil((totalKm * 1000) / RCHUNK);
   const rt: Route = {
     seed,
@@ -283,7 +288,8 @@ export function makeRoute(seed: number, totalKm: number): Route {
     finishS: totalKm * 1000,
     nChunks,
     bound: [{ x: 0, y: 0, hd: 0, h: 0 }],
-    poiCur: [{ station: 25_000, hotel: 80_000, garage: 110_000 }], // 1re station à ~25 km, etc.
+    poiDensity,
+    poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],
     chunks: new Map(),
     order: [],
     segs: buildSchedule(seed, totalKm),

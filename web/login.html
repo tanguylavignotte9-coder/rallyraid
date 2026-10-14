@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rally Raid — connexion</title>
+<style>
+  :root { --bg:#10151c; --panel:#171e27; --line:#232d3a; --txt:#dce3ec; --mut:#7c8794; --acc:#e63946; }
+  * { box-sizing:border-box; margin:0; }
+  body { background:var(--bg); color:var(--txt); font:14px/1.5 system-ui,sans-serif;
+    display:flex; min-height:100vh; align-items:center; justify-content:center; }
+  form { background:var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:28px; width:min(360px,92vw); display:grid; gap:12px; }
+  h1 { font-size:18px; letter-spacing:.08em; text-align:center; }
+  p.hint { color:var(--mut); font-size:12px; text-align:center; }
+  input { background:#0b0f14; color:var(--txt); border:1px solid var(--line);
+    border-radius:6px; padding:10px; font:inherit; }
+  button { background:var(--acc); border:none; color:#fff; border-radius:6px;
+    padding:10px; font:inherit; cursor:pointer; }
+  #err { color:var(--acc); font-size:13px; text-align:center; min-height:18px; }
+</style>
+</head>
+<body>
+<form id="f">
+  <h1>RALLY RAID</h1>
+  <p class="hint">Les comptes sont créés par l'administrateur de la course.</p>
+  <input id="u" placeholder="Identifiant" autocomplete="username" required>
+  <input id="p" type="password" placeholder="Mot de passe" autocomplete="current-password" required>
+  <button>Se connecter</button>
+  <div id="err"></div>
+</form>
+<script type="module">
+const $ = id => document.getElementById(id);
+$('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('err').textContent = '';
+  const r = await fetch('/api/login', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ user: $('u').value, pass: $('p').value }),
+  });
+  if (r.ok) { location.href = '/'; return; }
+  $('err').textContent = 'Identifiant ou mot de passe invalide.';
+});
+</script>
+</body>
+</html>

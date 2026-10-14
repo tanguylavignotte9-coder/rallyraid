@@ -1,19 +1,22 @@
-/* Poste de stratège : lit le snapshot serveur (1 s), dessine la carte de
-   l'itinéraire autour de la voiture sélectionnée, et édite son plan. */
+/* Poste de stratège — interface « une voiture ».
+   Le joueur voit SA voiture (jauges, plan, journal) ; les autres en
+   public (position, nom, km, état). Le super utilisateur a un
+   sélecteur discret de participant — l'interface reste une-voiture.
+   Avant configuration : écran de création de SA voiture (nom + livrée). */
 const $ = (id) => document.getElementById(id);
 const canvas = $('map');
 const ctx = canvas.getContext('2d');
 const ROAD_W = 7.5;
 
 let snap = null;
-let selId = 0;
+let me = null;           // compte {user, level, carId}
+let selCarId = null;     // voiture vue (super : sélecteur discret)
 let draft = { power: 1, actions: [] };
 let nextLocalId = -1;
+let lastEvents = [];     // bandeau d'événements en direct
 
-/* ---- carte : la géométrie vient du serveur (points de la voiture + un
-   tracé local reconstruit par polling autour de la sélection) ---- */
-let routePts = [];        // points du tracé [{x,y}]
-let view = { cx: 0, cy: 0, scale: 0.02 }; // scale: px par mètre
+let routePts = [], trackS = -1;
+let view = { cx: 0, cy: 0, scale: 0.02 };
 let drag = null;
 
 function resize() {
@@ -26,11 +29,9 @@ resize();
 
 canvas.addEventListener('wheel', (e) => {
   e.preventDefault();
-  const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  view.scale *= k;
+  view.scale *= e.deltaY < 0 ? 1.15 : 1 / 1.15;
   draw();
 }, { passive: false });
-
 canvas.addEventListener('pointerdown', (e) => {
   drag = { x: e.clientX, y: e.clientY, cx: view.cx, cy: view.cy, moved: false };
 });
@@ -42,19 +43,7 @@ canvas.addEventListener('pointermove', (e) => {
   view.cy = drag.cy + dy / view.scale;
   draw();
 });
-canvas.addEventListener('pointerup', (e) => {
-  if (drag && !drag.moved) {
-    const rect = canvas.getBoundingClientRect();
-    const px = e.clientX - rect.left, py = e.clientY - rect.top;
-    for (const c of snap?.cars ?? []) {
-      const sx = (c.pos.x - view.cx) * view.scale + canvas.width / 2 / devicePixelRatio;
-      const sy = -(c.pos.y - view.cy) * view.scale + canvas.height / 2 / devicePixelRatio;
-      if (Math.hypot(px - sx, py - sy) < 14) { selId = c.id; syncDraft(); break; }
-    }
-    draw();
-  }
-  drag = null;
-});
+canvas.addEventListener('pointerup', () => { drag = null; });
 
 function w2s(x, y) {
   return [
@@ -67,12 +56,11 @@ function draw() {
   ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   if (!snap) return;
-  const sel = snap.cars.find((c) => c.id === selId) ?? snap.cars[0];
-  if (sel) {
-    view.cx += (sel.pos.x - view.cx) * 0.08;
-    view.cy += (sel.pos.y - view.cy) * 0.08;
+  const myCar = snap.me ?? null;
+  if (myCar) {
+    view.cx += (myCar.pos.x - view.cx) * 0.08;
+    view.cy += (myCar.pos.y - view.cy) * 0.08;
   }
-  // tracé
   ctx.strokeStyle = '#2f3b4c';
   ctx.lineWidth = Math.max(2, ROAD_W * view.scale * 1.2);
   ctx.lineJoin = 'round';
@@ -81,55 +69,89 @@ function draw() {
     let started = false;
     for (const p of routePts) {
       const [sx, sy] = w2s(p.x, p.y);
-      if (!started) { ctx.moveTo(sx, sy); started = true; }
-      else ctx.lineTo(sx, sy);
+      if (!started) { ctx.moveTo(sx, sy); started = true; } else ctx.lineTo(sx, sy);
     }
     ctx.stroke();
   }
-  // voitures
   for (const c of snap.cars) {
-    const [sx, sy] = w2s(c.pos.x, c.pos.y);
-    if (sx < -30 || sy < -30 || sx > canvas.width + 30 || sy > canvas.height + 30) continue;
-    const r = c.id === selId ? 7 : 5;
-    ctx.beginPath();
-    ctx.arc(sx, sy, r, 0, 7);
-    ctx.fillStyle = c.color;
-    ctx.fill();
-    ctx.strokeStyle = c.id === selId ? '#fff' : '#000';
-    ctx.lineWidth = c.id === selId ? 2 : 1;
-    ctx.stroke();
-    ctx.fillStyle = '#dce3ec';
-    ctx.font = '11px system-ui';
-    ctx.fillText(`${c.rank}. ${c.name}`, sx + 9, sy + 4);
+    const pos = (snap.me && c.id === snap.me.id) ? snap.me.pos : null;
+    if (pos) {
+      const [sx, sy] = w2s(pos.x, pos.y);
+      ctx.beginPath(); ctx.arc(sx, sy, 7, 0, 7);
+      ctx.fillStyle = c.color; ctx.fill();
+      ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+      ctx.fillStyle = '#dce3ec'; ctx.font = '11px system-ui';
+      ctx.fillText(`${c.rank}. ${c.name}`, sx + 9, sy + 4);
+    } else {
+      // positions des autres : déduites du classement public (approximation
+      // locale pour la carte — pas de positions exactes exposées hors snapshot)
+      continue;
+    }
+  }
+  // les autres voitures : le snapshot public ne donne pas pos ; on les
+  // dessine depuis snap.cars si l'API les fournit (admin/super)
+  for (const c of snap.cars ?? []) {
+    if (snap.me && c.id === snap.me.id) continue;
+    if (c.pos) {
+      const [sx, sy] = w2s(c.pos.x, c.pos.y);
+      ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 7);
+      ctx.fillStyle = c.color; ctx.fill();
+      ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.fillStyle = '#9aa5b1'; ctx.font = '10px system-ui';
+      ctx.fillText(`${c.rank}. ${c.name}`, sx + 8, sy + 3);
+    }
   }
 }
 
-/* ---- polling serveur ---- */
+/* ---- polling ---- */
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  if (r.status === 401) { location.href = '/login.html'; return null; }
+  return r;
+}
+
 async function poll() {
   try {
-    const r = await fetch('/api/state');
-    snap = await r.json();
-    $('conn').textContent = 'connecté';
-    $('conn').className = 'on';
+    let url = '/api/state';
+    if (selCarId !== null) url += `?viewCar=${selCarId}`;
+    const r = await api(url);
+    if (!r) return;
+    const d = await r.json();
+    if (r.status !== 200) return;
+    snap = d;
+    $('conn').textContent = 'connecté'; $('conn').className = 'on';
     render();
     await fetchRoutePts();
     draw();
   } catch {
-    $('conn').textContent = 'déconnecté';
-    $('conn').className = 'off';
+    $('conn').textContent = 'déconnecté'; $('conn').className = 'off';
   }
 }
 
-let trackS = -1;
 async function fetchRoutePts() {
-  const sel = snap?.cars.find((c) => c.id === selId) ?? snap?.cars[0];
-  if (!sel) return;
-  const s0 = Math.max(0, sel.km * 1000 - 30_000);
-  if (Math.abs(s0 - trackS) < 5_000) return;
+  const ref = snap?.me ?? snap?.cars?.[0];
+  if (!ref) return;
+  const s0 = Math.max(0, ref.km * 1000 - 30000);
+  if (Math.abs(s0 - trackS) < 5000) return;
   trackS = s0;
-  const r = await fetch(`/api/track?s0=${s0}&len=60000&step=120`);
+  const r = await api(`/api/track?s0=${s0}&len=60000&step=120`);
+  if (!r) return;
   const d = await r.json();
   routePts = d.pts;
+}
+
+function stateLabel(c) {
+  if (c.st === 'finish') return '🏁 arrivé';
+  if (c.st === 'stop') {
+    if (c.stopKind === 'hotel') return '😴 dort à l\'hôtel';
+    if (c.stopKind === 'station') return '⛽ ravitaille';
+    if (c.stopKind === 'garage') return '🔧 au garage';
+    if (c.stopKind === 'dry') return '🆘 panne sèche';
+    if (c.stopKind === 'roadside') return '🛏️ en bord de route';
+    return '⏸️ arrêt';
+  }
+  if (c.st === 'toStop') return '→✋ rejoint un arrêt';
+  return '🚗 roule';
 }
 
 function fmtDur(s) {
@@ -137,43 +159,85 @@ function fmtDur(s) {
   return `${h} h ${String(m).padStart(2, '0')}`;
 }
 
+function show(id) { for (const x of ['view-configure','view-prep','view-race','view-finish']) $(x).style.display = 'none'; $(id).style.display = 'block'; }
+
 function render() {
   $('clock').textContent = snap.clock;
-  $('raceInfo').textContent = `· ${snap.totalKm} km · graine ${snap.seed}`;
+  $('raceInfo').textContent = `· ${snap.totalKm} km · ${snap.phase === 'preparation' ? 'préparation' : snap.phase === 'finished' ? 'terminée' : 'en course'}`;
+  const carCount = snap.cars.length;
+  $('gridInfo').textContent = `${carCount}/${snap.maxCars} inscrites`;
+
+  // écran de fin : podium figé
+  if (snap.phase === 'finished' && snap.me) { renderFinish(); return; }
+
+  // pas de voiture configurée → écran de configuration (si grille ouverte)
+  if (!snap.me) {
+    if (snap.phase !== 'preparation') {
+      $('configureMsg').textContent = 'La course est en cours et votre voiture n\'est pas inscrite — attendez le prochain reset (admin).';
+    }
+    show('view-configure');
+    renderLiveries();
+    return;
+  }
+  const me = snap.me;
+  syncDraftFrom(me.plan);
+
+  if (snap.phase === 'preparation') {
+    const left = Math.max(0, snap.startEpochMs - Date.now());
+    $('countdown').textContent = `Départ dans ${fmtDur(left / 1000)}`;
+    show('view-prep');
+  } else {
+    show('view-race');
+  }
+
+  // classement public
   const tb = $('standings').querySelector('tbody');
   tb.innerHTML = '';
   for (const c of snap.cars) {
     const tr = document.createElement('tr');
-    tr.className = c.id === selId ? 'sel' : '';
-    const state = c.st === 'finish' ? '🏁'
-      : c.st === 'stop' ? (c.stopKind === 'hotel' ? '😴' : c.stopKind === 'station' ? '⛽' : c.stopKind === 'dry' ? '🆘' : c.stopKind === 'roadside' ? '🛏️' : '🔧')
-      : c.st === 'toStop' ? '→✋' : '';
+    const mine = me && c.id === me.id;
+    if (mine) tr.className = 'sel';
     tr.innerHTML = `<td>${c.rank}</td>
       <td><span class="dot" style="background:${c.color}"></span> ${c.name}</td>
       <td class="km">${c.km.toFixed(1)} km</td>
-      <td>${state}</td>`;
-    tr.onclick = () => { selId = c.id; syncDraft(); render(); draw(); };
+      <td class="mut">${stateLabel(c)}</td>`;
     tb.appendChild(tr);
   }
-  const sel = snap.cars.find((c) => c.id === selId) ?? snap.cars[0];
-  if (!sel) return;
-  $('carName').textContent = sel.name;
-  $('fuelTxt').textContent = `${sel.fuel.toFixed(0)} L`;
-  $('fuelBar').style.width = `${Math.min(100, sel.fuel / 520 * 100)}%`;
-  $('fatTxt').textContent = `${sel.fatigue.toFixed(1)} h de veille`;
-  $('fatBar').style.width = `${Math.min(100, sel.fatigue / 30 * 100)}%`;
-  $('spdTxt').textContent = `${sel.v.toFixed(0)} km/h`;
-  $('spdBar').style.width = `${Math.min(100, sel.v / 198 * 100)}%`;
-  $('planTitle').textContent = `Stratégie — ${sel.name}`;
+
+  // jauges SA voiture
+  $('fuelTxt').textContent = `${me.fuel.toFixed(0)} L`;
+  $('fuelBar').style.width = `${Math.min(100, me.fuel / 520 * 100)}%`;
+  $('fatTxt').textContent = `${me.fatigue.toFixed(1)} h de veille`;
+  $('fatBar').style.width = `${Math.min(100, me.fatigue / 30 * 100)}%`;
+  $('spdTxt').textContent = `${me.v.toFixed(0)} km/h`;
+  $('spdBar').style.width = `${Math.min(100, me.v / 200 * 100)}%`;
+  $('planTitle').textContent = `Stratégie — ${me.name}`;
+
+  // journal complet + bandeau direct
+  renderEvents(me.events);
+  renderActions();
+}
+
+function renderEvents(events) {
   const ev = $('events');
   ev.innerHTML = '';
-  for (const e of [...sel.events].reverse()) {
+  for (const e of [...events].reverse()) {
     const p = document.createElement('p');
-    const t = new Date(snap.simT ? 0 : 0);
     p.innerHTML = `<b>${fmtClock(e.t)}</b> — ${e.msg}`;
     ev.appendChild(p);
   }
-  renderActions();
+  const fresh = events.length > lastEvents.length;
+  if (fresh && lastEvents.length > 0) {
+    const diff = events.filter((x) => !lastEvents.some((y) => y.t === x.t && y.msg === x.msg));
+    for (const e of diff.slice(0, 3)) {
+      const b = document.createElement('div');
+      b.className = 'flash';
+      b.textContent = `${fmtClock(e.t)} — ${e.msg}`;
+      $('flash').prepend(b);
+      setTimeout(() => b.remove(), 8000);
+    }
+  }
+  lastEvents = [...events];
 }
 
 function fmtClock(simT) {
@@ -182,14 +246,73 @@ function fmtClock(simT) {
   return d.toLocaleTimeString('fr-FR', { timeZone: 'Europe/Paris', hour: '2-digit', minute: '2-digit' });
 }
 
-function syncDraft() {
-  const sel = snap?.cars.find((c) => c.id === selId);
-  if (sel) {
-    draft = JSON.parse(JSON.stringify(sel.plan));
-    $('power').value = draft.power;
+function renderFinish() {
+  show('view-finish');
+  const me = snap.me;
+  $('finalRank').textContent = `${me.rank}${me.rank === 1 ? 'er' : 'e'}`;
+  const tb = $('podium').querySelector('tbody');
+  tb.innerHTML = '';
+  for (const c of snap.cars.slice(0, 3)) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${c.rank}</td><td><span class="dot" style="background:${c.color}"></span> ${c.name}</td><td class="km">${c.km.toFixed(1)} km</td>`;
+    tb.appendChild(tr);
   }
-  renderActions();
+  const sum = $('summary');
+  sum.innerHTML = `<p><b>${me.name}</b> — ${fmtDur(me.finishedAt ?? 0)} de course, ${(me.km).toFixed(1)} km.</p>`;
+  for (const e of me.events) {
+    const p = document.createElement('p');
+    p.textContent = `${fmtClock(e.t)} — ${e.msg}`;
+    sum.appendChild(p);
+  }
 }
+
+/* ---- configuration de la voiture (première fois) ---- */
+let liveries = { palette: [], taken: [] };
+async function renderLiveries() {
+  const r = await api('/api/liveries');
+  if (!r) return;
+  liveries = await r.json();
+  const box = $('liveryGrid');
+  box.innerHTML = '';
+  for (const col of liveries.palette) {
+    const taken = liveries.taken.includes(col);
+    const d = document.createElement('div');
+    d.className = 'swatch' + (taken ? ' taken' : '');
+    d.style.background = col;
+    d.title = taken ? 'livrée déjà prise' : '';
+    d.onclick = () => {
+      if (taken) return;
+      for (const s of box.children) s.classList.remove('sel');
+      d.classList.add('sel');
+      d.dataset.color = col;
+    };
+    box.appendChild(d);
+  }
+}
+
+$('configureBtn').onclick = async () => {
+  const name = $('teamName').value.trim();
+  const sel = document.querySelector('#liveryGrid .swatch.sel');
+  if (name.length < 2) { $('configureErr').textContent = 'Nom d\'équipe trop court.'; return; }
+  if (!sel) { $('configureErr').textContent = 'Choisissez une livrée.'; return; }
+  const r = await api('/api/configure', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name, color: sel.dataset.color }),
+  });
+  const d = await r.json();
+  if (r.status === 200) { $('configureErr').textContent = ''; poll(); }
+  else $('configureErr').textContent = d.error ?? 'erreur';
+};
+
+/* ---- plan ---- */
+function syncDraftFrom(plan) {
+  if (!syncedWithCarId || syncedWithCarId !== snap.me.id) {
+    draft = JSON.parse(JSON.stringify(plan));
+    $('power').value = draft.power;
+    syncedWithCarId = snap.me.id;
+  }
+}
+let syncedWithCarId = null;
 
 function renderActions() {
   const box = $('actions');
@@ -207,10 +330,7 @@ function renderActions() {
     div.innerHTML = `<span style="flex:1">${txt}</span>`;
     const del = document.createElement('button');
     del.textContent = '✕';
-    del.onclick = () => {
-      draft.actions = draft.actions.filter((x) => x.id !== a.id);
-      renderActions();
-    };
+    del.onclick = () => { draft.actions = draft.actions.filter((x) => x.id !== a.id); renderActions(); };
     div.appendChild(del);
     box.appendChild(div);
   }
@@ -236,15 +356,50 @@ $('addAction').onclick = () => {
 $('power').oninput = (e) => { draft.power = Number(e.target.value); };
 
 $('savePlan').onclick = async () => {
-  const sel = snap.cars.find((c) => c.id === selId);
-  if (!sel) return;
-  const r = await fetch('/api/plan', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ carId: sel.id, plan: draft }),
+  const r = await api('/api/plan', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ plan: draft }),
   });
-  if (r.ok) { $('savePlan').textContent = 'Plan appliqué ✓'; setTimeout(() => $('savePlan').textContent = 'Appliquer le plan', 1200); }
+  if (r.status === 200) { $('savePlan').textContent = 'Plan appliqué ✓'; setTimeout(() => $('savePlan').textContent = 'Appliquer le plan', 1200); }
 };
 
-setInterval(poll, 1000);
-poll();
+/* ---- sélecteur discret super utilisateur ---- */
+async function initMe() {
+  const r = await fetch('/api/me');
+  if (r.status === 401) { location.href = '/login.html'; return null; }
+  me = await r.json();
+  if (me.level !== 'player') {
+    $('superBar').style.display = 'flex';
+    const cr = await api('/api/cars');
+    if (cr) {
+      const d = await cr.json();
+      const sel = $('viewCar');
+      sel.innerHTML = '<option value="">— ma voiture —</option>';
+      for (const c of d.cars) {
+        const o = document.createElement('option');
+        o.value = c.id; o.textContent = c.name;
+        sel.appendChild(o);
+      }
+    }
+  }
+  if (me.level === 'admin') $('adminLink').style.display = 'inline';
+  return me;
+}
+
+$('viewCar').onchange = (e) => {
+  selCarId = e.target.value === '' ? null : Number(e.target.value);
+  lastEvents = [];
+  syncedWithCarId = null;
+  poll();
+};
+
+$('logoutBtn').onclick = async () => {
+  await fetch('/api/logout', { method: 'POST' });
+  location.href = '/login.html';
+};
+
+(async () => {
+  if (!(await initMe())) return;
+  setInterval(poll, 1000);
+  poll();
+})();

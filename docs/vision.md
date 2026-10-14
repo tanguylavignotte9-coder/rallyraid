@@ -73,6 +73,13 @@
 - **Carte 2D pour jouer + vue 3D spectateur** : on « regarde la course ».
 - **Onboarding : rien pour le moment** (décision explicite — éventuellement plus tard).
 
+### Comptes, déroulé et interface (acté, mise en œuvre)
+
+- **Pas d'auto-inscription** : l'admin crée les comptes (page admin). Mots de passe jamais en clair (scrypt + sel).
+- **Déroulé d'une course** : préparation (compte à rebours, grille ouverte, réglages d'avant-course modifiables) → course (grille figée ; un absent part quand même avec son plan par défaut) → terminée (podium + résumé figés jusqu'au reset).
+- **Interface « une voiture »** pour tous, y compris le super utilisateur : un joueur voit sa voiture en détail ; des autres, seulement position, nom et état visible. Le super utilisateur a un sélecteur discret de participant.
+- **Arrêt de survie rétabli** (amendement ADR 0002) : après la durée paramétrée sans connexion de SON joueur, la voiture s'arrête à un point d'arrêt et ne repart qu'à sa reconnexion — distinct de l'arrêt bord de route pour fatigue critique.
+
 ## Questions encore ouvertes (équilibrage, à trancher en jeu)
 
 - Paramètres exacts : plafond nuit (−X % ?), durées stop-and-go et amendes, seuils et taux du RNG de contact, formule du bonus de régularité, couplage dégradation/risque de la fatigue.

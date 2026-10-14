@@ -25,13 +25,22 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 
 | Endpoint | Rôle |
 |---|---|
-| `GET /api/state` | Snapshot complet : classement, jauges, plans, journal, positions |
+| `POST /api/login` / `POST /api/logout` | Session (cookie httpOnly, plusieurs sessions autorisées) |
+| `GET /api/me` | Compte courant : user, niveau, voiture |
+| `GET /api/state` | Classement public + SA voiture en détail (session requise) |
 | `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire (pour la carte) |
-| `POST /api/plan` | Remplacer le plan d'une voiture |
-| `POST /api/cars` | Ajouter une voiture (nom, couleur) |
-| `POST /api/reset` | Recréer une course (seed, distance) |
+| `POST /api/configure` | Première configuration : nom d'équipe + livrée (grille ouverte) |
+| `GET /api/liveries` | Livrées encore disponibles |
+| `POST /api/plan` | Remplacer le plan de SA voiture (ou de n'importe laquelle pour un super) |
+| `GET /api/cars` | Liste des participants (super/admin) |
+| `POST /api/admin/accounts` · `/api/admin/reset-pass` · `/api/admin/level` · `/api/admin/disable` | Gestion des comptes (admin) |
+| `GET/POST /api/admin/reset` | Paramètres et reset de course (admin) |
 
-Mode « super utilisateur » : vous pilotez toutes les voitures depuis le même navigateur (cliquer une voiture ou une ligne du classement pour la sélectionner, éditer son plan, appliquer).
+Toutes les routes API (et les pages de jeu) exigent une session valide — 401 sinon.
+
+**Comptes & déroulé** : pas d'auto-inscription — l'admin crée les comptes. Au premier lancement du serveur, un compte `admin` est créé avec un mot de passe aléatoire **affiché une seule fois dans la console** (modifiable dans la page admin, `admin.html`). Déroulé d'une course : **préparation** (compte à rebours, les joueurs configurent leur voiture — nom d'équipe + livrée unique) → **course** (temps réel 1:1) → **terminée** (podium et résumé figés jusqu'au prochain reset admin).
+
+Interface « une voiture » : chaque joueur voit SA voiture (jauges, plan, journal) et des autres seulement position, nom et état visible. Le super utilisateur garde un sélecteur discret de participant ; l'admin a la page d'administration (comptes : création, mot de passe, niveau super, désactivation ; course : reset avec graine, distance, date/heure de départ, fenêtre de préparation, type de fin distance/durée, survie sans connexion, densité POI, forme de la bride de nuit, nb d'inscriptions max).
 
 Règles simulées (temps réel 1:1, distance de test 1000 km par défaut) : la **nuit** (22 h–6 h, Paris) bride la vitesse ; la **fatigue** compte les heures de veille et force un sommeil de survie en bord de route au-delà de 30 h ; la **panne sèche** immobilise 2 h (assistance) ; les arrêts se font aux **points d'intérêt** de l'itinéraire (station = plein 12 min, hôtel = sommeil à la minute près, garage = réparation 30 min).
 
@@ -96,7 +105,8 @@ Le dépôt est pensé pour être vérifié sans toucher au code :
 | **1 — Généralisation** | N voitures (au lieu de 2) · variables d'usure (pneus, moteur, carburant) · points d'arrêt sur la piste | ✅ |
 | **2 — Stratégie** | Format de *plan* (données), exécuteur, plan par défaut hors-ligne | ✅ |
 | **3 — Serveur** | Simulation persistante 24 h/24 calée sur Paris, snapshots/reprise, API JSON | ✅ cette version |
-| **4 — Interface** | Client web PC/mobile : carte, classement, jauges, journal, éditeur de plan | ✅ cette version |
+| **4 — Interface** | Client web PC/mobile : carte, classement, jauges, journal, éditeur de plan | ✅ |
+| **5a — Comptes & admin** | Sessions scrypt, page admin (comptes, reset complet), interface une-voiture | ✅ cette version |
 | **5 — Compétition** | Course multi-jouieurs de plusieurs jours, doublages/rétablissements | ⬜ |
 
 ## Décisions fondatrices

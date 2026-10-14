@@ -9,13 +9,22 @@ import assert from 'node:assert/strict';
 import {
   makeRace, addCar, stepRace, rankCars,
   serializeRace, deserializeRace, setPlan, newPlanId,
-  FATIGUE_EMERG_H, TANK_L,
+  FATIGUE_EMERG_H, TANK_L, DEFAULT_CONFIG, wakeSurvival,
+  type RaceConfig,
 } from '../core/race.ts';
 
 const EPOCH = Date.UTC(2026, 9, 14, 10, 0, 0);
 
-function race2cars(seed: number) {
-  const race = makeRace(seed, 200, 1, EPOCH);
+function cfg(seed: number, totalKm: number, extra: Partial<RaceConfig> = {}): RaceConfig {
+  /* départ dans le passé : la course démarre immédiatement en 'racing'
+     (l'état 'preparation' attend une date de départ réelle) */
+  const c = { ...DEFAULT_CONFIG, seed, totalKm, startEpochMs: EPOCH, ...extra };
+  return c;
+}
+
+function race2cars(seed: number, extra: Partial<RaceConfig> = {}) {
+  const race = makeRace(cfg(seed, 200, extra));
+  race.departed = true; // départ immédiat : on teste la course, pas le compte à rebours
   addCar(race, 'A', '#111111');
   addCar(race, 'B', '#222222');
   return race;
@@ -125,11 +134,68 @@ test('course : sérialisation → reprise identique (garantie serveur)', () => {
 });
 
 test('course : arrivée → classement au temps total', () => {
-  const race = makeRace(23, 3, 1, EPOCH); // 3 km : très court
+  const race = makeRace(cfg(23, 3)); // 3 km : très court
+  race.departed = true;
   addCar(race, 'A', '#111111');
   addCar(race, 'B', '#222222');
   run(race, 3600);
   const ranked = rankCars(race);
   assert.ok(race.cars.every((c) => c.st === 'finish'), `tous arrivés (${race.cars.map((c) => c.st)})`);
   assert.ok((ranked[0]!.finishedAt ?? 0) <= (ranked[1]!.finishedAt ?? 0), 'ordre au temps total');
+});
+
+test('course : déroulé — préparation puis course', () => {
+  const race = makeRace(cfg(31, 50, { startEpochMs: Date.now() + 3600_000 }));
+  addCar(race, 'A', '#111111');
+  assert.equal(race.phase, 'preparation');
+  run(race, 300);
+  assert.equal(race.phase, 'preparation', 'rien ne bouge pendant la préparation');
+  assert.equal(race.simT, 0);
+  // le serveur donne le départ (horloge réelle passée)
+  race.departed = true;
+  run(race, 300);
+  assert.equal(race.phase, 'racing');
+  assert.ok(race.cars[0]!.s > 100);
+});
+
+test('course : arrêt de survie — stop sans connexion, repart à la reconnexion', () => {
+  const race = race2cars(37, { survivalHours: 1 });
+  const c = race.cars[0]!;
+  c.owner = 'joueurA';
+  run(race, 60);
+  run(race, 3700); // > 1 h de veille simulée sans connexion
+  assert.ok(c.survivalStop, 'arrêt de survie engagé');
+  assert.ok(c.events.some((e) => e.msg.includes('ARRÊT DE SURVIE')));
+  /* la voiture ROULE jusqu'au POI visé (comportement voulu : elle rejoint
+     le point d'arrêt), puis s'y fige jusqu'à la reconnexion */
+  run(race, 3600);
+  assert.ok(c.st === 'stop' || c.st === 'toStop', 'en route vers le point d\'arrêt');
+  run(race, 4 * 3600);
+  assert.equal(c.st, 'stop', 'arrivée au POI, à l\'arrêt');
+  const sBefore = c.s;
+  run(race, 600);
+  assert.equal(c.s, sBefore, 'la voiture reste figée sans son joueur');
+  wakeSurvival(race, c);
+  run(race, 60);
+  assert.ok(c.s > sBefore, 'la voiture repart à la reconnexion');
+  assert.equal(c.st, 'run');
+});
+
+test('course : fin par durée — tous classés au kilomètre atteint', () => {
+  const race = race2cars(41, { endType: 'duration', endHours: 1 });
+  run(race, 3620);
+  assert.equal(race.phase, 'finished');
+  assert.ok(race.cars.every((c) => c.st === 'finish'));
+  assert.ok(race.cars.every((c) => c.finishedAt !== null));
+});
+
+test('course : bride de nuit — plafond km/h (mode cap)', () => {
+  // départ à 23 h UTC = 1 h du matin Paris (heure d'été) : pleine nuit
+  const nightEpoch = Date.UTC(2026, 9, 14, 23, 0, 0);
+  const race = makeRace(cfg(43, 200, { nightMode: 'cap', nightValue: 90, startEpochMs: nightEpoch }));
+  race.departed = true;
+  const c = addCar(race, 'A', '#111111');
+  run(race, 600);
+  assert.ok(c.v * 3.6 <= 91, `vitesse respecte le plafond nuit : ${(c.v * 3.6).toFixed(0)} km/h`);
+  assert.ok(c.v * 3.6 > 10, 'la voiture roule (bridée mais pas bloquée)');
 });
