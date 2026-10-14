@@ -8,7 +8,7 @@ Course stratégique persistante multi-jouieurs. Des voitures de rally raid roule
 
 **En 1 clic** (vérifie/installe Node.js si besoin, démarre le serveur, ouvre le navigateur) :
 
-- **Windows** : double-cliquer `start.cmd` (PowerShell ; installe Node via winget si absent)
+- **Windows** : double-cliquer `start.cmd` (lance `start.ps1` via PowerShell ; installe Node via winget si absent)
 - **Linux / macOS** : `./start.sh` (propose d'installer Node via apt/brew si absent)
 
 Ou manuellement :
@@ -27,7 +27,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 |---|---|
 | `POST /api/login` / `POST /api/logout` | Session (cookie httpOnly, plusieurs sessions autorisées) |
 | `GET /api/me` | Compte courant : user, niveau, voiture |
-| `GET /api/state` | Classement public + SA voiture en détail (session requise) |
+| `GET /api/state` | Classement public + SA voiture en détail ; `hour` (Paris), météo et `pos3` par voiture |
 | `GET /api/track?s0=&len=&step=` | Géométrie de l'itinéraire : `{x, y, z, hd, w, biome, seg}` + `pois` (rétro-compatible 2D : x/y) |
 | `POST /api/configure` | Première configuration : nom d'équipe + livrée (grille ouverte) |
 | `GET /api/liveries` | Livrées encore disponibles |
@@ -99,7 +99,7 @@ Points clés :
 Le dépôt est pensé pour être vérifié sans toucher au code :
 
 - **Chaque push** déclenche la CI (onglet *Actions* sur GitHub) : ✔ vert = le moteur est sain.
-- Les **15 tests** garantissent : deux courses de la même graine sont identiques image par image ; un tour complet se boucle au temps de référence sans dépasser l'adhérence des pneus ; un duel de 15 minutes produit des tentatives de doublage mais zéro contact.
+- Les **25 tests** (3 fichiers : `core`, `route`, `race`) garantissent : déterminisme bit à bit (moteur, route, course — contacts et reprise après sérialisation inclus) ; continuité aux frontières de chunks ; arrêt de survie (stop sans connexion, reprise à la reconnexion) ; bride de nuit (multiplicateur et plafond) ; contacts et fautes (une course prudente ne produit presque rien) ; budget (revenus, dépenses, amendes) ; usure relative des gommes ; bulletins d'étape.
 
 ## Feuille de route
 
@@ -121,4 +121,4 @@ Voir [`docs/adr/`](docs/adr/) — chaque décision y est motivée :
 2. `0002` — Le joueur est stratège : les voitures sont autonomes, la stratégie est un plan
 3. `0003` — Navigateur uniquement, PC et mobile
 4. `0004` — Moteur physique maison, déterministe, pas de temps fixe
-5. `0005` — Le dépôt est écrit directement par Vibe (l'agent), sur validation de l'auteur
+5. `0005` — Le dépôt est écrit directement par Vibe (l'agent), sur validation de l'auteur — amendé : prompts préparés dans Work, codage dans le module Code

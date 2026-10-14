@@ -16,14 +16,14 @@ import http from 'node:http';
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { DT } from '../core/engine.ts';
+import { DT, SEG } from '../core/engine.ts';
 import {
   makeRace, addCar, stepRace, rankCars, serializeRace, deserializeRace,
   setPlan, wakeSurvival, parisClock, parisHour, weatherRain, DEFAULT_CONFIG,
   TIRES, CB_RANGE_KM, CB_MIN_INTERVAL_S,
   type Plan, type Race, type RaceCar, type RaceConfig, type TireKind,
 } from '../core/race.ts';
-import { makeRoute, routeTrack } from '../core/route.ts';
+import { makeRoute, routeTrack, RCHUNK, RSAMP } from '../core/route.ts';
 import { AccountStore, hashPassword, randomPassword, type Level } from './accounts.ts';
 
 const PORT = Number(process.env.RALLY_PORT ?? 8787);
@@ -66,7 +66,9 @@ function loadRace(): Race {
       console.error('État illisible, nouvelle course :', e);
     }
   }
-  const cfg: RaceConfig = { ...DEFAULT_CONFIG, startEpochMs: Date.now() + 60 * 60 * 1000 };
+  /* premier lancement : départ à now + fenêtre de préparation de la
+     config (le reset admin définit lui-même sa date, lui ne change pas) */
+  const cfg: RaceConfig = { ...DEFAULT_CONFIG, startEpochMs: Date.now() + DEFAULT_CONFIG.prepMinutes * 60_000 };
   return makeRace(cfg);
 }
 
@@ -89,6 +91,7 @@ type PublicCar = {
   hd: number;
   d: number;
   brake: 0 | 1;
+  weather: 'rain' | 'dry';
 };
 
 /* ce qu'un joueur voit des AUTRES : position, nom, km, état visible —
@@ -104,22 +107,19 @@ function publicCar(c: RaceCar, i: number): PublicCar {
     hd: p.hd,
     d: c.d,
     brake: c.brkCmd > 0 ? 1 : 0,
+    weather: weatherRain(race.seed, c.s) ? 'rain' : 'dry',
   };
 }
 
 function buildSnapshot() {
   const ranked = rankCars(race);
-  /* HEURE décimale de Paris (0-24) : pilote le cycle jour/nuit 3D ;
-     météo par tronçon pour le ciel (pluie = ciel lourd, sec = dégagé) */
+  /* HEURE décimale de Paris (0-24) : pilote le cycle jour/nuit 3D.
+     La météo (weatherRain) dépend de l'ABSCISSE (zones de 50 km),
+     pas du biome : elle est donc exposée PAR VOITURE dans publicCar. */
   const hour = parisHour(race);
-  const weather = [0, 1, 2, 3].map((b) => {
-    const s = ranked[0]?.s ?? 0;
-    return weatherRain(race.seed, s) ? 'rain' : 'dry';
-  });
   return {
     simT: race.simT,
     hour,
-    weather,
     clock: parisClock(race),
     phase: race.phase,
     finished: race.finished,
@@ -291,13 +291,14 @@ const server = http.createServer(async (req, res) => {
       for (let s = s0; s < s0 + len; s += step) {
         const sc = Math.min(s, race.trk.finishS);
         const p = race.trk.roadPoint(sc);
-        const k = Math.min(race.route.nChunks - 1, Math.floor(sc / 20800));
-        /* segType n'est pas exposé par RouteTrack : lecture directe du
-           chunk (déterministe, en cache) */
+        /* constantes de chunk importées de core/ (une seule source de
+           vérité : si la taille des chunks change, l'API ne se
+           désynchronise pas du tracé) */
+        const k = Math.min(race.route.nChunks - 1, Math.floor(sc / RCHUNK));
         let seg = 0;
         const c = race.route.chunks.get(k);
         if (c) {
-          const i = Math.min(2599, Math.max(0, Math.floor((sc - c.s0) / 8)));
+          const i = Math.min(RSAMP - 1, Math.max(0, Math.floor((sc - c.s0) / SEG)));
           seg = c.segType[i] ?? 0;
         }
         pts.push({
@@ -488,6 +489,10 @@ const server = http.createServer(async (req, res) => {
            devront reconfigurer leur voiture pour la nouvelle course */
         for (const a of accounts.accounts.values()) a.carId = null;
         accounts.save();
+        /* les messages CB d'une course morte ne fuient pas dans la
+           suivante : canal vidé au reset */
+        cbLog = [];
+        cbLast.clear();
         Object.assign(race, fresh);
         snapshot = buildSnapshot();
         save();

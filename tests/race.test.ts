@@ -290,3 +290,38 @@ test('bulletins : émis à heures fixes, déterministes', () => {
   assert.ok(b, 'bulletin présent après 3 h');
   assert.ok(b!.msg.includes('km'), 'contient des tronçons');
 });
+
+test("plan : l'action gommes survit à setPlan et se monte au garage", () => {
+  const race = race2cars(119);
+  const c = race.cars[0]!;
+  /* le joueur planifie TENDRES : l'action doit survivre à setPlan
+     (elle est consommée au GARAGE, pas au passage d'un km) */
+  setPlan(c, {
+    power: 1,
+    actions: [{ id: 1, type: 'tires', tire: 'tendres' }],
+  });
+  assert.ok(c.plan.actions.some((a) => a.type === 'tires' && a.tire === 'tendres'),
+    'l\'action tires survit à setPlan');
+  /* valeur invalide : rejetée */
+  setPlan(c, {
+    power: 1,
+    actions: [{ id: 2, type: 'tires', tire: 'inconnu' as never }],
+  });
+  assert.ok(!c.plan.actions.some((a) => a.type === 'tires'),
+    'une gomme inconnue est rejetée');
+  /* au garage : la gomme demandée est montée et facturée */
+  setPlan(c, {
+    power: 1,
+    actions: [{ id: 3, type: 'tires', tire: 'pluie' }],
+  });
+  const b0 = c.budget;
+  c.st = 'stop';
+  c.stopKind = 'garage';
+  c.stopHours = 0;
+  c.survivalStop = false;
+  c.stopUntil = race.simT + 30 * 60;
+  run(race, 30 * 60 + 10);
+  assert.equal(c.tire, 'pluie', 'la gomme demandée est montée');
+  assert.ok(c.budget < b0, `facturée (≈ ${(b0 - c.budget).toFixed(0)} €)`);
+  assert.ok(!c.plan.actions.some((a) => a.type === 'tires'), 'action consommée');
+});

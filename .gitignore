@@ -1,2 +1,3 @@
 node_modules/
 server/race-state.json
+server/accounts.json

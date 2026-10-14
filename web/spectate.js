@@ -565,10 +565,12 @@ function updateSky() {
   else if (h < 20) sky.lerpColors(new THREE.Color(0xf2975a), new THREE.Color(NIGHT), (h - 18) / 2.5);
   else sky.lerpColors(new THREE.Color(NIGHT), new THREE.Color(NIGHT), 1);
 
-  /* brouillard PAR BIOME + météo : pluie = ciel lourd et nuages bas */
+  /* brouillard PAR BIOME + météo DE LA VOITURE SUIVIE : la pluie
+     dépend de l'abscisse (zones de 50 km), pas du biome — le ciel
+     annonce ce que le journal confirmera */
   const car = snap.cars.find((c) => c.id === followId);
   const b = car ? (world?.pts?.find?.((p) => Math.abs(p.x - car.pos3.x) < 50)?.biome ?? 0) : 0;
-  const weather = snap.weather?.[b] === 'rain';
+  const weather = (car?.weather ?? 'dry') === 'rain';
   if (weather) { fogNear = 40; fogFar = 600; sky.multiplyScalar(0.55); }
   scene.background = sky;
   scene.fog.color.copy(sky).lerp(new THREE.Color(BIOME_FOG[b] ?? 0xcfe8f2), 0.4);

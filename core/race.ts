@@ -133,7 +133,9 @@ export type RaceConfig = {
 export const DEFAULT_CONFIG: RaceConfig = {
   seed: 42,
   totalKm: 1000,
-  startEpochMs: Date.now(),
+  /* 0, pas Date.now() : le cœur ne lit JAMAIS l'horloge (ADR 0004) —
+     le serveur et les tests écrasent toujours cette valeur */
+  startEpochMs: 0,
   prepMinutes: 60,
   endType: 'distance',
   endHours: 24 * 7,
@@ -296,19 +298,27 @@ function log(car: RaceCar, t: number, msg: string) {
   if (car.events.length > EVENTS_MAX) car.events.shift();
 }
 
+/* Formatteurs Intl construits UNE FOIS : instanciés à chaque pas de
+   simulation, ils explosaient la mémoire (~0,7 Mo par construction,
+   120 appels/s). Pas de cache de valeur global : un cache partagé
+   entre deux courses de même simT serait FAUX ; format() par pas
+   reste trivial. */
+const FMT_HM = new Intl.DateTimeFormat('fr-FR', {
+  timeZone: 'Europe/Paris', hour: 'numeric', minute: 'numeric', hour12: false,
+});
+const FMT_CLOCK = new Intl.DateTimeFormat('fr-FR', {
+  timeZone: 'Europe/Paris', weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+});
+
 export function parisHour(race: Race): number {
   const d = new Date(race.startEpochMs + race.simT * 1000);
-  const h = new Intl.DateTimeFormat('fr-FR', {
-    timeZone: 'Europe/Paris', hour: 'numeric', minute: 'numeric', hour12: false,
-  }).format(d);
+  const h = FMT_HM.format(d);
   return Number(h.split(':')[0]) + Number(h.split(':')[1]) / 60;
 }
 
 export function parisClock(race: Race): string {
   const d = new Date(race.startEpochMs + race.simT * 1000);
-  return new Intl.DateTimeFormat('fr-FR', {
-    timeZone: 'Europe/Paris', weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
-  }).format(d);
+  return FMT_CLOCK.format(d);
 }
 
 /* μ EFFECTIF du sol pour une voiture : biome × pluie (réduit μ, vision :
@@ -847,10 +857,15 @@ export function deserializeRace(raw: string): Race {
 }
 
 export function setPlan(car: RaceCar, plan: Plan) {
+  /* 'tires' DOIT survivre ici : l'action est consommée au GARAGE
+     (endStop), pas au passage d'un km — evalPlan ne la touche pas.
+     La valeur est validée (clé de TIRES), sinon l'action est rejetée. */
   car.plan = {
     power: Math.max(0.3, Math.min(1, plan.power)),
     actions: plan.actions.filter((a) =>
-      a.type === 'refuel' || a.type === 'sleep' || a.type === 'repair' || a.type === 'power'
+      a.type === 'refuel' || a.type === 'sleep' || a.type === 'repair'
+      || a.type === 'power'
+      || (a.type === 'tires' && a.tire in TIRES)
     ).map((a) => ({ ...a, id: a.id ?? newPlanId() })),
   };
   if (car.st === 'run') car.pwr = car.plan.power;
