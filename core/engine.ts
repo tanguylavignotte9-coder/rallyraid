@@ -273,11 +273,34 @@ export function crrAt(r: Road, s: number): number {
   return r.crrA[idxAt(s)];
 }
 
+/* ============ Track : la route vue par la physique ============
+   Toute la physique (chaîne de freinage, longitudinal, ligne de
+   course, cosmétiques) ne lit la route qu'à travers ces CINQ sondes.
+   La boucle du proto implémente Track via trackOf() ; la route
+   LINÉAIRE de la Phase 1 (core/route.ts) l'implémente chunk par chunk.
+   Même physique, même budget de grip, deux mondes. */
+export interface Track {
+  cvAt(s: number): number;
+  muAt(s: number): number;
+  wAt(s: number): number;
+  crrAt(s: number): number;
+  heightAt(s: number): number;
+}
+export function trackOf(r: Road): Track {
+  return {
+    cvAt: (s) => cvAt(r, s),
+    muAt: (s) => muAt(r, s),
+    wAt: (s) => wAt(r, s),
+    crrAt: (s) => crrAt(r, s),
+    heightAt: (s) => heightAt(r, s),
+  };
+}
+
 /* ---- chaîne de freinage : vitesse cible en respectant TOUTES les limites
    de virage à venir (on remonte 360 m en budgete de freinage, comme le
    pilote du raid-3d mais sans cercle de friction — c'est une CIBLE, le
    véhicule la rejoint avec ses vraies forces) ---- */
-export function speedTarget(r: Road, s: number, vCap: number, f = 0.75): number {
+export function speedTarget(r: Track, s: number, vCap: number, f = 0.75): number {
   let vNext = vCap;
   /* f = STYLE DE FREINAGE : 0,75 = pilote prudent (le joueur), 0,95 =
      freineur tardif (la rivale en attaque) — même physique, même budget
@@ -294,8 +317,8 @@ export function speedTarget(r: Road, s: number, vCap: number, f = 0.75): number 
   const SEG2 = 4;
   for (let j = 90; j >= 0; j--) {
     const sj = s + j * SEG2;
-    const muJ = muAt(r, sj);
-    const cv = Math.max(Math.abs(cvAt(r, sj - 3)), Math.abs(cvAt(r, sj)), Math.abs(cvAt(r, sj + 3)));
+    const muJ = r.muAt(sj);
+    const cv = Math.max(Math.abs(r.cvAt(sj - 3)), Math.abs(r.cvAt(sj)), Math.abs(r.cvAt(sj + 3)));
     const vC = cv < 1e-4 ? 1e4 : Math.sqrt(muJ * G / cv);
     vNext = Math.min(vNext, vC);
     if (j > 0) {
@@ -330,9 +353,9 @@ export function draftMul(behind: KinCar, front: KinCar): number {
   return 1 - 0.3 * (1 - ds / 30);
 }
 
-export function driveStep(r: Road, c: KinCar, vT: number, dt: number, draft = 1) {
-  const slope = (heightAt(r, c.s + 8) - heightAt(r, c.s)) / 8;
-  const drag = draft * CDA * c.v * c.v + (c.v > 0.3 ? CRR * crrAt(r, c.s) * M * G : 0);
+export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1) {
+  const slope = (r.heightAt(c.s + 8) - r.heightAt(c.s)) / 8;
+  const drag = draft * CDA * c.v * c.v + (c.v > 0.3 ? CRR * r.crrAt(c.s) * M * G : 0);
   let F = -drag - M * G * slope;
   /* PÉDALES (télémétrie pilote) : GAZ = ce que demande le pied — 1 =
      plancher ; en zone morte, la part de moteur juste nécessaire pour
@@ -348,8 +371,8 @@ export function driveStep(r: Road, c: KinCar, vT: number, dt: number, draft = 1)
      trail braking, gaz qui s'ouvre à la sortie). Ratio latéral clampé
      à 0,98 : au bord de la limite il reste ~20 % de longi pour le
      frein léger qui tient la voiture sur sa consigne. */
-  const mu = muAt(r, c.s);
-  const cv = Math.abs(cvAt(r, c.s));
+  const mu = r.muAt(c.s);
+  const cv = Math.abs(r.cvAt(c.s));
   const latG = cv > 1e-5 && mu > 0 ? (c.v * c.v * cv) / (mu * G) : 0;
   const kLong = Math.sqrt(Math.max(0, 1 - Math.min(latG, 0.98) ** 2));
   const FBud = Math.max(mu * M * G, 1);
@@ -400,8 +423,8 @@ export function driveStep(r: Road, c: KinCar, vT: number, dt: number, draft = 1)
    Le déplacement latéral est borné en vitesse (crédibilité : un changement
    de ligne à 90 km/h ne se fait pas en 0,1 s) et amorti en accélération —
    le suiveur se pose sur sa ligne sans jamais toupiller autour. */
-export function raceLineTarget(r: Road, s: number): number {
-  const hw = wAt(r, s) - 1.05;
+export function raceLineTarget(r: Track, s: number): number {
+  const hw = r.wAt(s) - 1.05;
   /* la VRAIE trajectoire : extérieur à l'engagement, intérieur à la
      corde, extérieur à la sortie. La corde se prend sur la courbure
      proche (10 m devant — turn-in tardif : la corde se prend EN entrant
@@ -411,11 +434,11 @@ export function raceLineTarget(r: Road, s: number): number {
      (1 − inNow) éteint ouverture et sortie au cœur du virage, pour
      qu'un virage voisin ne tire jamais la corde. Dans un S, ouverture
      de sortie et d'entrée s'opposent au centre : transition nette. */
-  const near = cvAt(r, s + 10);
-  const far = cvAt(r, s + 70);
+  const near = r.cvAt(s + 10);
+  const far = r.cvAt(s + 70);
   /* double sonde arrière : la sortie extérieure se prolonge ~45 m après
      le virage (on ne se recentre pas en un claquement de doigts) */
-  const past = cvAt(r, s - 20) + cvAt(r, s - 45);
+  const past = r.cvAt(s - 20) + r.cvAt(s - 45);
   const gate = 1 - Math.min(1, Math.abs(near) / 0.003);
   return Math.max(-hw, Math.min(hw, KLAT * near - 170 * far * gate - 190 * past * gate));
 }
@@ -454,9 +477,9 @@ export function lateralStep(c: KinCar, dT: number, dt: number) {
    exclusives l'une de l'autre) — rien à déduire ici. */
 
 /* ---- cosmétiques : tangage de pente + roulis de virage, lissés ---- */
-export function cosmeticsStep(r: Road, c: KinCar, dt: number) {
-  const pT = Math.atan2(heightAt(r, c.s + 4) - heightAt(r, c.s - 4), 8);
-  const rT = Math.max(-0.1, Math.min(0.1, 0.03 * cvAt(r, c.s) * c.v * c.v));
+export function cosmeticsStep(r: Track, c: KinCar, dt: number) {
+  const pT = Math.atan2(r.heightAt(c.s + 4) - r.heightAt(c.s - 4), 8);
+  const rT = Math.max(-0.1, Math.min(0.1, 0.03 * r.cvAt(c.s) * c.v * c.v));
   c.pitch += (pT - c.pitch) * Math.min(1, dt * 8);
   c.roll += (rT - c.roll) * Math.min(1, dt * 7);
 }
@@ -497,6 +520,7 @@ export function makeRival(seed: number, s: number, v: number): Rival {
 
 export type Game = {
   road: Road;
+  trk: Track;
   pl: KinCar;
   rv: Rival;
 };
@@ -505,13 +529,14 @@ export function makeGame(seed: number): Game {
   const road = buildRoad(seed);
   return {
     road,
+    trk: trackOf(road),
     pl: { s: 500, v: 0, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0, acc: 0, steer: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, pwr: 1 },
     rv: makeRival(seed * 7919 + 13, 350, 0),
   };
 }
 
 export function stepPlayer(g: Game, dt: number) {
-  const r = g.road;
+  const r: Track = g.trk;
   const c = g.pl;
   const rv = g.rv;
   /* à FOND : la seule limite est la chaîne de freinage — la voiture
@@ -524,7 +549,7 @@ export function stepPlayer(g: Game, dt: number) {
      largeur de voiture tant que le recouvrement dure — il ne referme
      jamais la porte, collision interdite */
   if (rv.on && rv.st >= 1 && Math.abs(c.s - rv.s) < CAR_L + 0.5) {
-    const hwP = wAt(r, c.s) - 1.05;
+    const hwP = r.wAt(c.s) - 1.05;
     if (rv.d - c.d >= 0) dT = Math.min(dT, Math.max(-hwP, rv.d - 2.1));
     else dT = Math.max(dT, Math.min(hwP, rv.d + 2.1));
   }
@@ -540,15 +565,15 @@ export function stepPlayer(g: Game, dt: number) {
    le maximum de courbure du premier VRAI virage à venir (|cv| > 0,004,
    R < 250 m) ; −1 s'il n'y en a pas à portée (drag race en ligne
    droite, l'aspiration fait le travail) */
-export function nextApex(r: Road, s: number, maxD: number): number {
+export function nextApex(r: Track, s: number, maxD: number): number {
   let best = -1;
   let cvB = 0;
   for (let i = s + 12; i < s + maxD; i += 4) {
-    const cv = Math.abs(cvAt(r, i));
+    const cv = Math.abs(r.cvAt(i));
     if (cv > 0.004) {
       if (cv > cvB) { cvB = cv; best = i; }
       /* la courbure retombe après l'apex : la corde est trouvée */
-      if (cvB > 0 && Math.abs(cvAt(r, i + 24)) < 0.002) break;
+      if (cvB > 0 && Math.abs(r.cvAt(i + 24)) < 0.002) break;
     }
   }
   return best;
@@ -556,13 +581,13 @@ export function nextApex(r: Road, s: number, maxD: number): number {
 
 export function stepRival(g: Game, dt: number) {
   if (!g.rv.on) return;
-  const r = g.road;
+  const r: Track = g.trk;
   const rv = g.rv;
   const pl = g.pl;
   rv.t += dt;
   rv.msgT = Math.max(0, rv.msgT - dt);
   const gap = pl.s - rv.s;
-  const hw = wAt(r, rv.s) - 0.97;
+  const hw = r.wAt(rv.s) - 0.97;
   let vT: number;
   let dT: number;
   /* la « haie » : la ligne de la rivale quand elle vit à côté du joueur.
@@ -590,12 +615,12 @@ export function stepRival(g: Game, dt: number) {
        place reste vérifiée par fits à chaque sonde. */
     const reach = Math.min(400, 20 + pl.v * 5.5);
     const room =
-      Math.abs(cvAt(r, rv.s)) < 0.005 &&
+      Math.abs(r.cvAt(rv.s)) < 0.005 &&
       [0, 30, 60, 90, 120, 160, 200, 240, 280, 320, 360].filter((o) => o <= reach).every((o) => {
         const sj = rv.s + o;
-        const hj = wAt(r, sj) - 0.97;
+        const hj = r.wAt(sj) - 0.97;
         const dj = raceLineTarget(r, sj);
-        return Math.abs(cvAt(r, sj)) < (o <= 90 ? 0.0015 : 0.0028) && (fits(1, dj, hj) || fits(-1, dj, hj));
+        return Math.abs(r.cvAt(sj)) < (o <= 90 ? 0.0015 : 0.0028) && (fits(1, dj, hj) || fits(-1, dj, hj));
       });
     /* suivi proportionnel : la vitesse relative vise l'écart de 8 m.
        Avant : « jamais plus lent que le joueur » (max(chain, pl.v)) la
@@ -615,7 +640,7 @@ export function stepRival(g: Game, dt: number) {
        la même règle qu'au déclenchement (extérieur du virage à venir,
        sinon là où le joueur n'est pas) : préparation = engagement. */
     if (room && gap < 20) {
-      const cvNx = cvAt(r, rv.s + 60);
+      const cvNx = r.cvAt(rv.s + 60);
       let pref = Math.abs(cvNx) > 0.002 ? (cvNx > 0 ? -1 : 1) : pl.d > 0.3 ? -1 : pl.d < -0.3 ? 1 : rv.d >= pl.d ? 1 : -1;
       if (!fits(pref, pl.d, hw) && fits(-pref, pl.d, hw)) pref = -pref;
       if (fits(pref, pl.d, hw)) {
@@ -634,14 +659,14 @@ export function stepRival(g: Game, dt: number) {
     const dApex = apexS - rv.s;
     const wApex = Math.max(60, pl.v * 5.5);
     if (apexS > 0 && dApex > 40 && dApex < wApex && gap < 22 && gap > -1) {
-      const sideIn = cvAt(r, apexS) > 0 ? 1 : -1;
+      const sideIn = r.cvAt(apexS) > 0 ? 1 : -1;
       const tApex = dApex / Math.max(pl.v, 10);
-      const hj = wAt(r, apexS) - 0.97;
+      const hj = r.wAt(apexS) - 0.97;
       const dj = raceLineTarget(r, apexS) - sideIn * 2.1;
       const corridor =
         fits(sideIn, pl.d, hw) &&
         fits(sideIn, dj, hj) &&
-        fits(sideIn, raceLineTarget(r, apexS - 40) - sideIn, wAt(r, apexS - 40) - 0.97);
+        fits(sideIn, raceLineTarget(r, apexS - 40) - sideIn, r.wAt(apexS - 40) - 0.97);
       if (tApex >= (gap - 2.3) / 2.4 && tApex > 1.2 && corridor) {
         rv.side = sideIn;
         rv.st = 1;
@@ -653,10 +678,10 @@ export function stepRival(g: Game, dt: number) {
     } else if (gap < ATTACK_GAP && room) {
       /* drag race : pas de corde à l'horizon, elle passe par vitesse
          pure ; côté : là où le joueur n'est pas, validé comme l'abort */
-      const cvNext = cvAt(r, rv.s + 60);
+      const cvNext = r.cvAt(rv.s + 60);
       const pref = Math.abs(cvNext) > 0.002 ? (cvNext > 0 ? -1 : 1) : pl.d > 0.3 ? -1 : pl.d < -0.3 ? 1 : rv.d >= pl.d ? 1 : -1;
       const okAhead = (sgn: number) =>
-        fits(sgn, pl.d, hw) && fits(sgn, raceLineTarget(r, pl.s + 30), wAt(r, pl.s + 30) - 0.97);
+        fits(sgn, pl.d, hw) && fits(sgn, raceLineTarget(r, pl.s + 30), r.wAt(pl.s + 30) - 0.97);
       let side = 0;
       if (okAhead(pref)) side = pref;
       else if (okAhead(-pref)) side = -pref;
@@ -690,7 +715,7 @@ export function stepRival(g: Game, dt: number) {
            avortait dans la seconde — 34 plongées mortes par demi-heure
            à égalité. Corridor absent → le drag race continue et se
            jugera par la ligne à +30 m (vitesse pure ou recadrage). */
-        if (fits(rv.side, raceLineTarget(r, a) - rv.side * 2.1, wAt(r, a) - 0.97)) rv.apexS = a;
+        if (fits(rv.side, raceLineTarget(r, a) - rv.side * 2.1, r.wAt(a) - 0.97)) rv.apexS = a;
       }
     }
     let done = false;
@@ -707,7 +732,7 @@ export function stepRival(g: Game, dt: number) {
       done = true;
     } else if (rv.apexS > 0 && pl.s >= rv.apexS) {
       /* le défenseur atteint la corde : LA règle s'applique, maintenant */
-      const inside = rv.side === (cvAt(r, rv.apexS) > 0 ? 1 : -1);
+      const inside = rv.side === (r.cvAt(rv.apexS) > 0 ? 1 : -1);
       rv.tries++;
       rv.won = inside ? rv.s + CAR_L / 2 >= pl.s - 0.05 : rv.s >= pl.s - 0.05;
       if (rv.won) {
@@ -755,8 +780,8 @@ export function stepRival(g: Game, dt: number) {
         !fits(rv.side, dPl12 - rv.side * y, hw);
       const noAhead =
         rv.apexS > 0
-          ? !fits(rv.side, raceLineTarget(r, rv.apexS) - rv.side * 2.1, wAt(r, rv.apexS) - 0.97)
-          : !fits(rv.side, raceLineTarget(r, pl.s + 30), wAt(r, pl.s + 30) - 0.97);
+          ? !fits(rv.side, raceLineTarget(r, rv.apexS) - rv.side * 2.1, r.wAt(rv.apexS) - 0.97)
+          : !fits(rv.side, raceLineTarget(r, pl.s + 30), r.wAt(pl.s + 30) - 0.97);
       if (noNow || noAhead) {
         rv.tries++;
         rv.st = 3;
@@ -861,7 +886,7 @@ export function stepRival(g: Game, dt: number) {
     const sgn = rv.d >= pl.d ? 1 : -1;
     const wantR = pl.d + sgn * CAR_D;
     const wantP = rv.d - sgn * CAR_D;
-    const hwP = wAt(r, pl.s) - 1.05;
+    const hwP = r.wAt(pl.s) - 1.05;
     if (Math.abs(wantR) <= hw) {
       /* on écarte la rivale — c'est à l'attaquante de gérer sa marge
          (dSm synchronisé : la cible lissée ne doit pas lutter contre
@@ -890,3 +915,4 @@ export function advance(g: Game, dt: number) {
   stepPlayer(g, dt);
   stepRival(g, dt);
 }
+
