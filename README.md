@@ -8,7 +8,7 @@ Course stratégique persistante multi-jouieurs. Des voitures de rally raid roule
 
 **En 1 clic** (vérifie/installe Node.js si besoin, démarre le serveur, ouvre le navigateur) :
 
-- **Windows** : double-cliquer `start.cmd` (lance `start.ps1` via PowerShell ; installe Node via winget si absent)
+- **Windows** : double-cliquer `start.cmd` — il lance `start.ps1` avec la politique d'exécution adaptée (le `-ExecutionPolicy Bypass` ne s'applique qu'à CE script, pas au système ; installe Node via winget si absent)
 - **Linux / macOS** : `./start.sh` (propose d'installer Node via apt/brew si absent)
 
 Ou manuellement :
