@@ -1,13 +1,15 @@
-# Rally Raid — lancement en 1 clic (Windows PowerShell)
+# Rally Raid - lancement en 1 clic (Windows PowerShell)
 # Verifie Node.js (l installe via winget si absent), demarre le serveur
 # autoritaire puis ouvre le navigateur sur le poste de stratege.
 # Aucune mort silencieuse : chaque echec est LISIBLE, la fenetre
 # attend une touche avant de se fermer (voir start.cmd : pause si echec).
 #
-# REGLE ABSOLUE de ce fichier : chaines delimitees par des doubles quotes
-# uniquement, et ZERO apostrophe dans les textes — une apostrophe dans une
-# chaine simple-quote casse le parsing du fichier ENTIER (cascade
-# d erreurs). Les commentaires reformulent sans apostrophe.
+# REGLE ABSOLUE de ce fichier : ASCII PUR. Windows PowerShell 5.1 lit un
+# fichier sans BOM comme ANSI (CP1252) : le tiret long UTF-8 devient un
+# octet 0x94 que le parseur traite comme un GUILLEMET COURBE : toutes les
+# chaines se desalignent et le fichier entier casse. pwsh 7 lit en UTF-8 :
+# la CI ne voit rien. D ou le controle ASCII ajoute dans la CI. En plus :
+# chaines en doubles quotes uniquement, ZERO apostrophe dans les textes.
 
 $ErrorActionPreference = "Stop"
 $url = "http://localhost:8787"
@@ -27,14 +29,14 @@ function Test-Node {
 
 function Test-Winget {
   # winget n est pas present sur tout Windows (versions anciennes,
-  # certaines editions d entreprise) — le verifier AVANT d appeler,
+  # certaines editions d entreprise) - le verifier AVANT d appeler,
   # sinon erreur rouge incomprehensible.
   return [bool](Get-Command winget -ErrorAction SilentlyContinue)
 }
 
 function Fail {
   # echec explicite : message rouge, attente d une touche, exit 1
-  # (start.cmd marque l echec et fait pause — fenetre jamais instantanee)
+  # (start.cmd marque l echec et fait pause - fenetre jamais instantanee)
   param([string]$Msg)
   Write-Host $Msg -ForegroundColor Red
   Read-Host "Appuie sur Entree pour fermer"
@@ -46,7 +48,7 @@ try {
 
   if (-not (Test-Node)) {
     if (-not (Test-Winget)) {
-      Fail "winget indisponible — installe Node.js >= 22.6 manuellement : https://nodejs.org"
+      Fail "winget indisponible - installe Node.js >= 22.6 manuellement : https://nodejs.org"
     }
     if ($hadNode) {
       # Node present mais TROP VIEUX : mise a jour proposee
@@ -58,10 +60,10 @@ try {
       }
       $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
       if (-not (Test-Node)) {
-        Fail "Node.js toujours < 22.6 — mets a jour manuellement : https://nodejs.org"
+        Fail "Node.js toujours < 22.6 - mets a jour manuellement : https://nodejs.org"
       }
     } else {
-      Write-Host "Node.js absent — installation via winget..." -ForegroundColor Yellow
+      Write-Host "Node.js absent - installation via winget..." -ForegroundColor Yellow
       winget install --id OpenJS.NodeJS.LTS -e --accept-source-agreements --accept-package-agreements
       if ($LASTEXITCODE -ne 0) {
         Fail "Echec de winget. Installe Node.js manuellement : https://nodejs.org"
@@ -69,7 +71,7 @@ try {
       # recharger le PATH de la session courante
       $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
       if (-not (Test-Node)) {
-        Fail "Node installe mais pas accessible — ferme et relance ce script."
+        Fail "Node installe mais pas accessible - ferme et relance ce script."
       }
     }
   }
@@ -82,9 +84,9 @@ try {
   for ($i = 0; $i -lt 30; $i++) {
     Start-Sleep -Seconds 1
     # le serveur a plante au demarrage ? Ne pas attendre 30 s pour
-    # dire qu il ne repond pas — expliquer la cause la plus frequente.
+    # dire qu il ne repond pas - expliquer la cause la plus frequente.
     if ($proc.HasExited) {
-      Fail "Le serveur a plante au lancement. Cause frequente : un ancien serveur occupe deja le port 8787 — ferme les processus node (gestionnaire des taches) et relance. Pour voir le detail : ouvre une console et lance node --experimental-strip-types server/server.ts"
+      Fail "Le serveur a plante au lancement. Cause frequente : un ancien serveur occupe deja le port 8787 - ferme les processus node (gestionnaire des taches) et relance. Pour voir le detail : ouvre une console et lance node --experimental-strip-types server/server.ts"
     }
     try {
       Invoke-WebRequest -Uri "$url/api/health" -UseBasicParsing -TimeoutSec 2 | Out-Null
@@ -94,12 +96,12 @@ try {
   }
 
   if ($up) {
-    Write-Host "Serveur pret — ouverture du navigateur..." -ForegroundColor Green
+    Write-Host "Serveur pret - ouverture du navigateur..." -ForegroundColor Green
     Start-Process $url
     Write-Host "Le serveur tourne en arriere-plan (fenetre Node minimisee)." -ForegroundColor Cyan
     Write-Host "Pour arreter : ferme la fenetre Node, ou taskkill /im node.exe."
   } else {
-    Fail "Le serveur ne repond pas — verifie la fenetre Node minimisee."
+    Fail "Le serveur ne repond pas - verifie la fenetre Node minimisee."
   }
 } catch {
   # filet de securite global : plus JAMAIS de mort silencieuse

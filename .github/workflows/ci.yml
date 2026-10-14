@@ -24,3 +24,11 @@ jobs:
           [System.Management.Automation.Language.Parser]::ParseFile(
             (Resolve-Path start.ps1), [ref]$null, [ref]$errs) | Out-Null
           if ($errs) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 }
+      # PS 5.1 (Windows) lit un fichier sans BOM comme ANSI : tout octet
+      # non-ASCII (tiret long, accent, guillemet courbe) casse le parsing.
+      # pwsh 7 lit UTF-8 — le contrôle de syntaxe seul ne voit rien.
+      - name: Launcher 100 pour cent ASCII (PS 5.1 lit sans BOM en ANSI)
+        shell: pwsh
+        run: |
+          $bad = (Get-Content start.ps1 -Raw).ToCharArray() | Where-Object { [int]$_ -gt 127 }
+          if ($bad) { Write-Error "start.ps1 contient des caracteres non ASCII (PS 5.1 les lit comme des guillemets courbes)"; exit 1 }
