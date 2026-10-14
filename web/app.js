@@ -211,6 +211,11 @@ function render() {
   $('fatBar').style.width = `${Math.min(100, me.fatigue / 30 * 100)}%`;
   $('spdTxt').textContent = `${me.v.toFixed(0)} km/h`;
   $('spdBar').style.width = `${Math.min(100, me.v / 200 * 100)}%`;
+  $('budTxt').textContent = `${Math.round(me.budget)} €`;
+  $('budBar').style.width = `${Math.min(100, Math.max(0, (me.budget / 40000) * 100))}%`;
+  $('tireName').textContent = me.punctured ? '⚠ crevé !' : `(${me.tire})`;
+  $('tireTxt').textContent = me.punctured ? 'mode dégradé' : `${Math.round(me.tireWear * 100)} % usé`;
+  $('tireBar').style.width = `${Math.min(100, me.tireWear * 100)}%`;
   $('planTitle').textContent = `Stratégie — ${me.name}`;
 
   // journal complet + bandeau direct
@@ -297,7 +302,7 @@ $('configureBtn').onclick = async () => {
   if (!sel) { $('configureErr').textContent = 'Choisissez une livrée.'; return; }
   const r = await api('/api/configure', {
     method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, color: sel.dataset.color }),
+    body: JSON.stringify({ name, color: sel.dataset.color, tire: $('tireChoice').value }),
   });
   const d = await r.json();
   if (r.status === 200) { $('configureErr').textContent = ''; poll(); }
@@ -326,6 +331,7 @@ function renderActions() {
     else if (a.type === 'refuel' && a.atKm !== undefined) txt = `Plein au km ${a.atKm}`;
     else if (a.type === 'sleep' && a.atKm !== undefined) txt = `Dormir au km ${a.atKm}`;
     else if (a.type === 'repair' && a.atKm !== undefined) txt = `Garage au km ${a.atKm}`;
+    else if (a.type === 'tires') txt = `Monter des gommes ${a.tire} au prochain garage`;
     else txt = JSON.stringify(a);
     div.innerHTML = `<span style="flex:1">${txt}</span>`;
     const del = document.createElement('button');
@@ -350,6 +356,14 @@ $('addAction').onclick = () => {
     else if (kind === 'sleepKm') draft.actions.push({ id, type: 'sleep', atKm });
     else if (kind === 'repairKm') draft.actions.push({ id, type: 'repair', atKm });
   }
+  renderActions();
+};
+
+$('addTire').onclick = () => {
+  const t = $('tireChange').value;
+  if (!t) return;
+  draft.actions = draft.actions.filter((a) => a.type !== 'tires');
+  draft.actions.push({ id: nextLocalId--, type: 'tires', tire: t });
   renderActions();
 };
 
@@ -398,8 +412,45 @@ $('logoutBtn').onclick = async () => {
   location.href = '/login.html';
 };
 
+$('cbSend').onclick = async () => {
+  const msg = $('cbMsg').value.trim();
+  if (!msg) return;
+  const r = await api('/api/cb', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ msg }),
+  });
+  if (r.status === 200) $('cbMsg').value = '';
+  else if (r.status === 429) $('cbMsg').placeholder = 'Trop de messages — patientez 5 s';
+};
+
+async function pollCb() {
+  if (!snap?.me) return;
+  try {
+    const r = await api('/api/cb');
+    if (!r) return;
+    const d = await r.json();
+    const box = $('cbBox');
+    const seen = new Set([...box.children].map((c) => c.dataset.key));
+    for (const m of d.msgs) {
+      const key = `${m.t}|${m.carId}|${m.msg}`;
+      if (seen.has(key)) continue;
+      const p = document.createElement('p');
+      p.dataset.key = key;
+      p.innerHTML = `<b>${m.from} :</b> ${m.msg}`;
+      box.appendChild(p);
+      const b = document.createElement('div');
+      b.className = 'flash';
+      b.textContent = `📻 ${m.from} : ${m.msg}`;
+      $('flash').prepend(b);
+      setTimeout(() => b.remove(), 8000);
+    }
+    while (box.children.length > 30) box.firstChild.remove();
+  } catch {}
+}
+
 (async () => {
   if (!(await initMe())) return;
   setInterval(poll, 1000);
+  setInterval(pollCb, 2000);
   poll();
 })();

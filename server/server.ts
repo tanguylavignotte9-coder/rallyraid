@@ -20,7 +20,8 @@ import { DT } from '../core/engine.ts';
 import {
   makeRace, addCar, stepRace, rankCars, serializeRace, deserializeRace,
   setPlan, wakeSurvival, parisClock, DEFAULT_CONFIG,
-  type Plan, type Race, type RaceCar, type RaceConfig,
+  TIRES, CB_RANGE_KM, CB_MIN_INTERVAL_S,
+  type Plan, type Race, type RaceCar, type RaceConfig, type TireKind,
 } from '../core/race.ts';
 import { AccountStore, hashPassword, randomPassword, type Level } from './accounts.ts';
 
@@ -72,6 +73,13 @@ const race = loadRace();
 let saveAcc = 0;
 let snapshot = buildSnapshot();
 
+/* CB de proximité : canal global unique ; la RÉCEPTION est filtrée par
+   la distance entre équipes (≤ CB_RANGE_KM). Anti-flood par équipe.
+   Simple journal en mémoire — les messages arrivent en temps réel. */
+type CbMsg = { from: string; carId: number; msg: string; t: number };
+let cbLog: CbMsg[] = [];
+const cbLast = new Map<string, number>();
+
 type PublicCar = {
   id: number; rank: number; name: string; color: string;
   km: number; v: number; st: string; stopKind: string | null;
@@ -116,6 +124,12 @@ function buildMe(car: RaceCar): unknown {
       fuel: car.fuel,
       fatigue: car.fatigue,
       v: car.v * 3.6,
+      budget: car.budget,
+      tire: car.tire,
+      tireWear: car.tireWear,
+      punctured: car.punctured,
+      pendingSG: car.pendingSG,
+      incidents: car.incidents,
       plan: car.plan,
       events: car.events,
       finishedAt: car.finishedAt,
@@ -259,14 +273,16 @@ const server = http.createServer(async (req, res) => {
          La voiture n'existait pas avant — elle s'insrit sur la grille */
       if (me) { sendJSON(res, 400, { error: 'voiture déjà configurée' }); return; }
       if (race.phase !== 'preparation') { sendJSON(res, 400, { error: 'la grille est fermée — course en cours' }); return; }
-      const body = JSON.parse(await readBody(req)) as { name?: string; color?: string };
+      const body = JSON.parse(await readBody(req)) as { name?: string; color?: string; tire?: TireKind };
       const name = (body.name ?? '').trim().slice(0, 20);
       if (name.length < 2) { sendJSON(res, 400, { error: 'nom d\'équipe trop court' }); return; }
+      if (body.tire && !(body.tire in TIRES)) { sendJSON(res, 400, { error: 'gommes inconnues' }); return; }
       if (race.cars.length >= race.config.maxCars) { sendJSON(res, 400, { error: 'grille complète' }); return; }
       let color = body.color ?? '';
       if (!LIVERY_PALETTE.includes(color)) { sendJSON(res, 400, { error: 'livrée inconnue' }); return; }
       if (race.cars.some((c) => c.color === color)) { sendJSON(res, 400, { error: 'livrée déjà prise dans cette course' }); return; }
       const car = addCar(race, name, color);
+      if (body.tire) car.tire = body.tire;   // réglage d'avant-course (gommes)
       car.owner = acc.username;
       acc.carId = car.id;
       accounts.save();
@@ -281,6 +297,7 @@ const server = http.createServer(async (req, res) => {
       sendJSON(res, 200, {
         palette: LIVERY_PALETTE,
         taken: race.cars.map((c) => c.color),
+        tires: Object.entries(TIRES).map(([k, v]) => ({ kind: k, ...v })),
         phase: race.phase,
       });
       return;
@@ -297,6 +314,37 @@ const server = http.createServer(async (req, res) => {
       setPlan(car, body.plan);
       snapshot = buildSnapshot();
       sendJSON(res, 200, { ok: true });
+      return;
+    }
+
+    if (url.pathname === '/api/cb' && req.method === 'POST') {
+      const body = JSON.parse(await readBody(req)) as { msg?: string };
+      const msg = (body.msg ?? '').trim().slice(0, 160);
+      if (!me) { sendJSON(res, 400, { error: 'aucune voiture — configurez-la d\'abord' }); return; }
+      if (!msg) { sendJSON(res, 400, { error: 'message vide' }); return; }
+      const last = cbLast.get(acc.username) ?? 0;
+      if (Date.now() - last < CB_MIN_INTERVAL_S * 1000) {
+        sendJSON(res, 429, { error: 'trop de messages — patientez' });
+        return;
+      }
+      cbLast.set(acc.username, Date.now());
+      cbLog.push({ from: me.name, carId: me.id, msg, t: race.simT });
+      if (cbLog.length > 200) cbLog.shift();
+      sendJSON(res, 200, { ok: true });
+      return;
+    }
+    if (url.pathname === '/api/cb' && req.method === 'GET') {
+      /* réception : seulement les équipes à ≤ CB_RANGE_KM (proximité) */
+      if (!me) { sendJSON(res, 200, { msgs: [] }); return; }
+      const msgs = cbLog
+        .filter((m) => m.carId !== me.id)
+        .filter((m) => {
+          const other = race.cars.find((c) => c.id === m.carId);
+          if (!other) return false;
+          return Math.abs(other.s - me.s) <= CB_RANGE_KM * 1000;
+        })
+        .slice(-60);
+      sendJSON(res, 200, { msgs });
       return;
     }
 

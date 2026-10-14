@@ -80,6 +80,14 @@
 - **Interface « une voiture »** pour tous, y compris le super utilisateur : un joueur voit sa voiture en détail ; des autres, seulement position, nom et état visible. Le super utilisateur a un sélecteur discret de participant.
 - **Arrêt de survie rétabli** (amendement ADR 0002) : après la durée paramétrée sans connexion de SON joueur, la voiture s'arrête à un point d'arrêt et ne repart qu'à sa reconnexion — distinct de l'arrêt bord de route pour fatigue critique.
 
+### Le sel de la course (acté, mis en œuvre)
+
+- **Contacts & fautes** : chaque MANŒUVRE de doublage lancée porte un risque dosé (constant exporté, tiré du PRNG semé du cœur — jamais Math.random). Gravité croissante avec le rythme du moment (fatigue + nuit + vitesse) : léger = échange de peinture + ralenti ; lourd = crevaison ou dégât réparable — jamais de fin de course par accident. Faute attribuée selon le règlement (intérieur = essieu avant au rétroviseur à la corde ; extérieur = à hauteur ou devant ; espace dû côte à côte) ; sans faute claire = incident de course. Pénalité : stop-and-go au prochain POI + amende si lourde. Journal public détaillé.
+- **Budget** : revenu périodique = base + bonus position + bonus de régularité (moitié rythme stable, moitié absence d'incident). Dépenses : carburant (€/L), pneus, réparations, amendes. Jauge € dans l'interface.
+- **Gommes** : TENDRES (grip haut, usure rapide), DURES (grip moindre, usure lente), PLUIE (grip normal sous la pluie) — choisies à la préparation, changées au garage. La pluie par tronçon (déterministe) réduit μ : les pluie compensent, les secs y perdent. Crevaison surprise à gomme morte : mode dégradé 85 km/h jusqu'au garage.
+- **Bulletins d'étape** : toutes les 3 h (constante exportée), biomes et météo des prochains tronçons — déterministes, lus sur l'état de la course.
+- **CB de proximité** : canal global unique, anti-flood 1 message/5 s ; chaque équipe ne reçoit que les messages des équipes à ≤ 100 km. Bandeau direct + journal.
+
 ## Questions encore ouvertes (équilibrage, à trancher en jeu)
 
 - Paramètres exacts : plafond nuit (−X % ?), durées stop-and-go et amendes, seuils et taux du RNG de contact, formule du bonus de régularité, couplage dégradation/risque de la fatigue.

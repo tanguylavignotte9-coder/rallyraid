@@ -32,6 +32,7 @@ Puis ouvrir **http://localhost:8787** dans le navigateur (interface en français
 | `POST /api/configure` | Première configuration : nom d'équipe + livrée (grille ouverte) |
 | `GET /api/liveries` | Livrées encore disponibles |
 | `POST /api/plan` | Remplacer le plan de SA voiture (ou de n'importe laquelle pour un super) |
+| `POST/GET /api/cb` | CB de proximité : émission (anti-flood 5 s) / réception filtrée ≤ 100 km |
 | `GET /api/cars` | Liste des participants (super/admin) |
 | `POST /api/admin/accounts` · `/api/admin/reset-pass` · `/api/admin/level` · `/api/admin/disable` | Gestion des comptes (admin) |
 | `GET/POST /api/admin/reset` | Paramètres et reset de course (admin) |

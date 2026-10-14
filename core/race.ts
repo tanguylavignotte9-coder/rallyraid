@@ -20,7 +20,8 @@
 */
 import {
   speedTarget, driveStep, lateralStep, raceLineTarget, draftMul,
-  DT, CAR_L, type KinCar,
+  DT, CAR_L, mulberry32,
+  type KinCar,
 } from './engine.ts';
 import {
   makeRoute, routeTrack, type Route, type RouteTrack, type PoiKind,
@@ -43,6 +44,65 @@ export const ROADSIDE_H = 8;          // sommeil de survie en bord de route
 export const ROADSIDE_EFF = 0.5;     // récupération de moitié
 export const POI_SEARCH_M = 200_000;  // recherche du prochain point d'arrêt
 export const EVENTS_MAX = 60;
+
+/* ============ MÉTÉO — déterministe par tronçon (grip seulement, vision) ============
+   La pluie réduit μ du biome : la voiture ralentit toute seule. Tirée
+   du PRNG semé par (graine, zone) — jamais de hasard de simulation,
+   l'incertitude viendra de l'information non révélée (bulletins). */
+export const WEATHER_ZONE_M = 50_000;  // tronçon météo : 50 km
+export const RAIN_P = 0.25;            // probabilité d'un tronçon pluvieux
+export const RAIN_MU = 0.75;           // μ × 0,75 sous la pluie
+export function weatherRain(seed: number, s: number): boolean {
+  const zone = Math.floor(Math.max(0, s) / WEATHER_ZONE_M);
+  return mulberry32(((seed ^ 0x5ea7a11) | 0) + Math.imul(zone + 1, 2654435761) | 0)() < RAIN_P;
+}
+
+/* ============ GOMMES ============
+   TENDRES : grip haut, usure rapide · DURES : grip moindre, usure lente
+   · PLUIE : grip normal sous la pluie, dégradé sur sec. Le choix se
+   fait à la préparation ; le changement se fait au garage. */
+export type TireKind = 'tendres' | 'dures' | 'pluie';
+export const TIRES: Record<TireKind, { grip: number; wetGrip: number; wear: number; price: number }> = {
+  tendres: { grip: 1.06, wetGrip: 0.80, wear: 1.6, price: 900 },
+  dures:   { grip: 0.96, wetGrip: 0.78, wear: 0.6, price: 700 },
+  pluie:   { grip: 1.00, wetGrip: 1.02, wear: 1.0, price: 800 },
+};
+export const TIRE_WEAR_MAX = 1;         // jauge d'usure : 0 neuve → 1 morte
+export const TIRE_WORN_MU = 0.85;       // grip résiduel d'une gomme usée
+export const PUNCTURE_WORN_P = 0.05;   // à chaque PAS où la gomme est morte
+
+/* ============ CONTACTS & FAUTES (le sel de la course) ============
+   Chaque MANŒUVRE DE DOUBLAGE lancée porte un risque dosé : tirage
+   via le PRNG semé du cœur (jamais Math.random — ADR 0004). Une
+   course prudente ne produit presque rien ; attaquer souvent
+   s'expose. JAMAIS de fin de course par accident. */
+export const CONTACT_P = 0.10;          // risque de contact PAR MANŒUVRE de doublage
+export const CONTACT_COOLDOWN_S = 120;  // délai mini entre deux manœuvres à risque
+export const CONTACT_SEV_HEAVY = 0.35;  // part des contacts « lourds »
+export const STOPANDGO_MIN = 2;         // pénalité stop-and-go (prochain POI)
+export const FINE_HEAVY = 1500;         // amende (faute lourde)
+export const CONTACT_SLOW_S = 30;       // ralentissement après contact léger
+export const PUNCTURE_CAP_KMH = 85;    // crevaison : mode dégradé (vision)
+
+/* ============ BUDGET — revenu périodique, dépenses (vision) ============
+   Base fixe + bonus position + bonus de régularité (moitié rythme de
+   croisière stable, moitié absence d'incident). Formules en constantes :
+   l'équilibrage se fera en course test. */
+export const BUDGET_START = 20000;      // € de départ
+export const BUDGET_BASE_H = 800;       // €/h de base
+export const BUDGET_POS_H = 500;        // €/h max du bonus position
+export const BUDGET_REG_H = 400;        // €/h max du bonus de régularité
+export const REG_SPEED_BAND = 3;        // m/s : écart max à la croisière pour « stable »
+export const REG_STABLE_T = 300;        // s : durée de stabilité requise
+export const FUEL_PRICE = 1.9;         // €/L
+export const REPAIR_PRICE = 2200;       // réparation dégât lourd au garage
+export const BULLETIN_H = 3;            // bulletins d'étape : toutes les 3 h
+/* ============ CB DE PROXIMITÉ — canal global, réception par distance ============
+   Chaque équipe ne reçoit que les messages des équipes à ≤ CB_RANGE_KM.
+   Anti-flood simple : CB_MIN_INTERVAL_S entre deux messages d'une même
+   équipe. L'historique vit côté serveur (ordonnancement d'arrivée). */
+export const CB_RANGE_KM = 100;         // portée de réception (km)
+export const CB_MIN_INTERVAL_S = 5;     // anti-flood par équipe
 
 /* ---- Paramétrage d'une course (page admin) : tout réglage a sa
    constante exportée nommée — l'équilibrage se règle en course test,
@@ -92,7 +152,8 @@ export type PlanAction =
   | { id: number; type: 'refuel' | 'sleep' | 'repair'; atKm?: number }
   | { id: number; type: 'refuel'; ifTag: 'fuelLow'; threshold: number }
   | { id: number; type: 'sleep'; ifTag: 'fatigueHigh'; threshold: number; hours: number }
-  | { id: number; type: 'power'; power: number };
+  | { id: number; type: 'power'; power: number }
+  | { id: number; type: 'tires'; tire: TireKind };
 
 export type Plan = { power: number; actions: PlanAction[] };
 
@@ -117,6 +178,17 @@ export type RaceCar = KinCar & {
   owner: string | null;      // compte joueur propriétaire (null = non attribuée)
   lastSeenSimT: number;      // dernière connexion de SON joueur (arrêt de survie)
   survivalStop: boolean;     // vrai pendant l'arrêt de survie POI
+  tire: TireKind;           // gommes montées
+  tireWear: number;         // usure 0 (neuve) → 1 (morte)
+  punctured: boolean;       // crevaison : mode dégradé jusqu'au garage
+  budget: number;           // € (jauge : revenus − dépenses)
+  incidents: number;        // incidents de course (bonus régularité)
+  regTimer: number;        // secondes consécutives à rythme stable
+  pendingSG: boolean;      // stop-and-go dû au prochain POI (faute)
+  contactSlowT: number;    // ralentissement restant après contact léger
+  attackMan: boolean;      // une MANŒUVRE de doublage est lancée (risque tiré 1 fois)
+  attackCooldown: number;  // délai avant une nouvelle manœuvre à risque
+  heavyDamage: boolean;     // dégât lourd : réparation obligatoire au garage
 };
 
 export type Race = {
@@ -134,7 +206,20 @@ export type Race = {
   phase: RacePhase;      // préparation → course → fin
   departed: boolean;     // vrai dès que le départ a été donné (horloge serveur)
   endSimT: number;       // fin par durée (secondes sim)
+  rng: CountedRng;      // PRNG semé des contacts (jamais Math.random), compté
+  lastBulletinT: number; // heure du dernier bulletin d'étape
 };
+
+/* PRNG compté : même graine ⇒ même séquence (ADR 0004), et le nombre
+   d'appels est sérialisé — la reprise rejoue exactement les tirages
+   déjà consommés (replays, redémarrage serveur). */
+export type CountedRng = { (): number; calls: number };
+export function makeCountedRng(seed: number): CountedRng {
+  const base = mulberry32(seed);
+  const f = () => { f.calls++; return base(); };
+  f.calls = 0;
+  return f;
+}
 
 let planIdNext = 1;
 export function newPlanId(): number {
@@ -166,6 +251,17 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
     owner: null,
     lastSeenSimT: 0,
     survivalStop: false,
+    tire: 'dures',
+    tireWear: 0,
+    punctured: false,
+    budget: BUDGET_START,
+    incidents: 0,
+    regTimer: 0,
+    pendingSG: false,
+    contactSlowT: 0,
+    attackMan: false,
+    attackCooldown: 0,
+    heavyDamage: false,
   };
 }
 
@@ -183,6 +279,8 @@ export function makeRace(cfg: RaceConfig, timeScale = 1): Race {
        c'est stepRace qui reçoit l'info « départ passé ») */
     phase: 'preparation',
     departed: false,
+    rng: makeCountedRng(((cfg.seed ^ 0xc027ac7) | 0) + 0x9e37),
+    lastBulletinT: 0,
     endSimT: cfg.endType === 'duration' ? cfg.endHours * 3600 : Infinity,
   };
 }
@@ -213,6 +311,29 @@ export function parisClock(race: Race): string {
   }).format(d);
 }
 
+/* μ EFFECTIF du sol pour une voiture : biome × pluie (réduit μ, vision :
+   « la voiture ralentit toute seule ») × gomme (secs vs pluie — les pluie
+   compensent, les secs y perdent) × usure (jauge : grip résiduel). */
+function muFactor(race: Race, car: RaceCar): number {
+  const rain = weatherRain(race.seed, car.s);
+  const tire = TIRES[car.tire];
+  const wet = rain ? tire.wetGrip : tire.grip;
+  const worn = TIRE_WORN_MU + (1 - TIRE_WORN_MU) * Math.max(0, 1 - car.tireWear);
+  return rain ? RAIN_MU * wet * worn : wet * worn;
+}
+
+/* proxy Track par voiture : injecte le μ effectif (gomme + météo) dans
+   le moteur — la physique (cercle de friction) ne change pas, seule la
+   sonde μ est réécrite. */
+function carTrack(race: Race, car: RaceCar): RouteTrack {
+  const trk = race.trk;
+  const f = muFactor(race, car);
+  return {
+    ...trk,
+    muAt: (s: number) => trk.muAt(s) * f,
+  };
+}
+
 /* bride de nuit — FORME paramétrable (admin) : multiplicateur ×0,85 ou
    plafond km/h ; la fenêtre 22 h → 6 h (Paris) ne change pas */
 function nightCap(race: Race, hour: number): number {
@@ -232,8 +353,8 @@ function fatigueMul(fatigue: number): number {
 
 function poiDuration(car: RaceCar): number {
   switch (car.stopKind) {
-    case 'station': return REFUEL_MIN * 60;
-    case 'garage': return REPAIR_MIN * 60;
+    case 'station': return REFUEL_MIN * 60 + (car.pendingSG ? STOPANDGO_MIN * 60 : 0);
+    case 'garage': return REPAIR_MIN * 60 + (car.pendingSG ? STOPANDGO_MIN * 60 : 0);
     case 'hotel': return car.stopHours * 3600;
     case 'dry': return DRY_ASSIST_MIN * 60;
     case 'roadside': return ROADSIDE_H * 3600;
@@ -258,8 +379,12 @@ function endStop(race: Race, car: RaceCar) {
      aucun service ne s'applique, aucun faux message de reprise */
   if (car.survivalStop) return;
   if (car.stopKind === 'station') {
+    /* dépense : carburant facturé au litre (vision : « dépenses :
+       carburant, pneus, réparations, amendes ») */
+    const litres = TANK_L - car.fuel;
+    car.budget -= litres * FUEL_PRICE;
     car.fuel = TANK_L;
-    log(car, race.simT, `Plein fait (${TANK_L} L) — repart`);
+    log(car, race.simT, `Plein fait (${Math.round(litres)} L, ${Math.round(litres * FUEL_PRICE)} €) — repart`);
   } else if (car.stopKind === 'hotel') {
     car.fatigue = Math.max(0, car.fatigue - car.stopHours);
     log(car, race.simT, `Réveil — ${car.stopHours} h de sommeil à l'hôtel`);
@@ -270,7 +395,33 @@ function endStop(race: Race, car: RaceCar) {
     car.fatigue = Math.max(0, car.fatigue - ROADSIDE_H * ROADSIDE_EFF);
     log(car, race.simT, 'Sommeil de survie en bord de route terminé');
   } else if (car.stopKind === 'garage') {
-    log(car, race.simT, 'Réparation terminée — repart');
+    /* garage : changement de gommes prévu au plan + réparations —
+       la crevaison et le dégât lourd se réparent TOUJOURS (jamais de
+       fin de course par accident), la gomme demandée est facturée */
+    const tireAct = car.plan.actions.find((a) => a.type === 'tires');
+    if (tireAct && tireAct.type === 'tires') {
+      car.tire = tireAct.tire;
+      car.budget -= TIRES[tireAct.tire].price;
+      log(car, race.simT, `Gommes ${tireAct.tire} montées (${TIRES[tireAct.tire].price} €)`);
+      car.plan.actions = car.plan.actions.filter((a) => a.id !== tireAct.id);
+    } else if (car.tireWear >= TIRE_WEAR_MAX || car.punctured) {
+      car.tire = 'dures';
+      car.budget -= TIRES.dures.price;
+      log(car, race.simT, `Gommes dures de secours montées (${TIRES.dures.price} €)`);
+    }
+    car.tireWear = 0;
+    if (car.punctured) { car.punctured = false; log(car, race.simT, 'Crevaison réparée'); }
+    if (car.heavyDamage) {
+      car.heavyDamage = false;
+      car.budget -= REPAIR_PRICE;
+      log(car, race.simT, `Réparation terminée (${REPAIR_PRICE} €) — repart`);
+    } else {
+      log(car, race.simT, 'Au garage — repart');
+    }
+  }
+  if (car.pendingSG) {
+    car.pendingSG = false;
+    log(car, race.simT, `Stop-and-go effectué (${STOPANDGO_MIN} min) — repart`);
   }
   car.st = 'run';
   car.stopKind = null;
@@ -310,7 +461,7 @@ function evalPlan(race: Race, car: RaceCar) {
         if (engageStop(race, car, 'station', 0)) acts.splice(i, 1);
         return;
       }
-    } else if (a.atKm !== undefined) {
+    } else if (a.type !== 'tires' && a.atKm !== undefined) {
       if (car.s / 1000 >= a.atKm) {
         const ok = engageStop(race, car, a.type as PoiKind, a.type === 'sleep' ? 7 : 0);
         if (ok) acts.splice(i, 1);
@@ -334,7 +485,7 @@ function nearestAhead(race: Race, car: RaceCar): RaceCar | null {
 }
 
 function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
-  const trk = race.trk;
+  const trk = carTrack(race, car);
   const front = nearestAhead(race, car);
   const info: DuelInfo = { front, attackSide: 0 };
 
@@ -436,6 +587,36 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   car.fatigue += dt / 3600;
   car.fuel = Math.max(0, car.fuel - (FUEL_IDLE_LPS + (FUEL_BASE_LPS + FUEL_PWR_LPS * car.pwr) * car.thr) * dt);
 
+  /* USURE DES GOMMES : proportionnelle au grip sollicité (cercle de
+     friction — la gomme travaille) × facteur d'usure du type monté */
+  car.tireWear = Math.min(TIRE_WEAR_MAX, car.tireWear
+    + car.grip * TIRES[car.tire].wear * dt / (TIRE_WEAR_MAX * 3600 * 2));
+  /* crevaison surprise : gomme morte → risque par pas, PRNG semé */
+  if (!car.punctured && car.tireWear >= TIRE_WEAR_MAX && race.rng() < PUNCTURE_WORN_P) {
+    car.punctured = true;
+    log(car, race.simT, 'CREVAISON — gommes mortes, mode dégradé jusqu\'au garage (85 km/h)');
+  }
+
+  /* MANŒUVRE DE DOUBLAGE = on attaque par le côté à moins de 12 m. Le
+     risque est tiré UNE FOIS PAR MANŒUVRE (CONTACT_P), pas à chaque pas :
+     une course prudente ne produit presque rien, attaquer souvent
+     s'expose. Cooldown entre manœuvres ; la gravité monte avec le
+     rythme du moment (fatigue + nuit + vitesse). */
+  if (car.attackCooldown > 0) car.attackCooldown -= dt;
+  const attacking = info.attackSide !== 0 && front;
+  if (attacking && !car.attackMan && car.attackCooldown <= 0) {
+    car.attackMan = true;                 // manœuvre lancée
+    car.attackCooldown = CONTACT_COOLDOWN_S;
+    if (race.rng() < CONTACT_P) applyContact(race, car, front, hour);
+  }
+  if (!attacking) car.attackMan = false;  // manœuvre terminée
+
+  /* BUDGET — bonus de régularité (moitié) : rythme de croisière stable =
+     vitesse qui ne s'écarte pas de plus de REG_SPEED_BAND m/s de la
+     consigne ; l'absence d'incident (moitié) se lit sur car.incidents */
+  const stable = Math.abs(car.v - cap) < REG_SPEED_BAND && car.v > 5;
+  car.regTimer = stable ? car.regTimer + dt : 0;
+
   if (car.s >= trk.finishS) {
     car.s = trk.finishS;
     car.st = 'finish';
@@ -444,6 +625,65 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
     log(car, race.simT, 'ARRIVÉE !');
   }
   return info;
+}
+
+/* ---- CONTACT : gravité croissante avec le rythme (fatigue + nuit +
+   vitesse) ; léger = échange de peinture + ralenti, lourd = crevaison ou
+   dégât réparable. JAMAIS de fin de course par accident. ---- */
+function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: number) {
+  const night = hour >= 22 || hour < 6;
+  /* gravité : fatigue + nuit + vitesse haute poussent vers le lourd */
+  const stress = Math.min(1,
+    attacker.fatigue / FATIGUE_EMERG_H * 0.5
+    + (night ? 0.2 : 0)
+    + Math.min(0.3, attacker.v / V_CAP * 0.3));
+  const heavy = race.rng() < CONTACT_SEV_HEAVY + stress * 0.2;
+
+  /* attribution de la faute — règlement acté (vision.md) :
+     INTÉRIEUR : l'attaquant doit placer son essieu avant au moins à
+       hauteur du rétroviseur du défenseur AU POINT DE CORDE, sans
+       brutalité → ici : assez loin à ses côtés pour avoir la place ;
+     EXTÉRIEUR : à hauteur ou devant pour exiger la largeur ;
+     côte à côte : espace dû.
+     Sans faute claire : incident de course, pas de sanction. */
+  const overlap = attacker.s - (defender.s - CAR_L); // avancée de l'attaquant
+  const atApexOk = overlap > 1.2;                   // essieu avant ≥ rétroviseur
+  const sideGap = Math.abs(attacker.d - defender.d);
+  const spaceOk = sideGap >= 1.9;                    // largeur laissée
+  const fault = !atApexOk || !spaceOk;
+
+  if (fault) {
+    /* pénalité du fautif : stop-and-go au prochain POI + amende si lourde */
+    attacker.pendingSG = true;
+    attacker.incidents++;
+    if (heavy) attacker.budget -= FINE_HEAVY;
+    const msg = heavy
+      ? `${attacker.name} pénalisé pour contact sur ${defender.name} — règle de la corde (faute lourde, ${FINE_HEAVY} € d'amende)`
+      : `${attacker.name} pénalisé pour contact sur ${defender.name} — règle de la corde`;
+    logPublic(race, attacker, defender, msg);
+    /* effets physiques du lourd : dégât réparable ou crevaison */
+    if (heavy) {
+      if (race.rng() < 0.5) {
+        attacker.punctured = true;
+        logPublic(race, attacker, defender, `${attacker.name} crevé dans le contact`);
+      } else {
+        attacker.heavyDamage = true;
+        logPublic(race, attacker, defender, `${attacker.name} endommagé dans le contact — réparation au garage`);
+      }
+    }
+  } else {
+    attacker.incidents++;
+    defender.incidents++;
+    attacker.contactSlowT = CONTACT_SLOW_S;
+    defender.contactSlowT = CONTACT_SLOW_S;
+    logPublic(race, attacker, defender, `${attacker.name} et ${defender.name} se touchent — incident de course`);
+  }
+}
+
+/* journal PUBLIC : un événement de duel va dans le journal des DEUX */
+function logPublic(race: Race, a: RaceCar, b: RaceCar, msg: string) {
+  log(a, race.simT, msg);
+  log(b, race.simT, msg);
 }
 
 function resolvePairs(race: Race) {
@@ -466,6 +706,46 @@ function resolvePairs(race: Race) {
   }
 }
 
+/* BUDGET PÉRIODIQUE : base + bonus position + bonus régularité — versé
+   en continu (€/h en constantes, équilibrage plus tard en course test). */
+export function budgetStep(race: Race, dt: number) {
+  if (race.phase !== 'racing') return;
+  const ranked = rankCars(race);
+  const n = ranked.length || 1;
+  for (let i = 0; i < ranked.length; i++) {
+    const car = ranked[i]!;
+    const posBonus = BUDGET_POS_H * (1 - i / n);            // 1er au max
+    const stable = car.regTimer >= REG_STABLE_T ? 0.5 : 0;   // moitié régularité
+    const clean = car.incidents === 0 ? 0.5 : 0;            // moitié sans incident
+    car.budget += (BUDGET_BASE_H + posBonus + BUDGET_REG_H * (stable + clean)) * dt / 3600;
+  }
+}
+
+/* BULLETINS D'ÉTAPE : toutes les BULLETIN_H heures de simulation, lu sur
+   l'état de la course (biomes + météo des prochains tronçons) —
+   déterministe, pas de RNG dédié. Renvoie le texte à diffuser, ou null. */
+/* BULLETINS D'ÉTAPE — toutes les BULLETIN_H heures sim, texte lu sur
+   l'état de la course (biomes + météo des tronçons devant la tête de
+   course) : déterministe, aucun RNG dédié (ADR 0004). Émis dans le
+   journal PUBLIC (toutes les voitures). */
+export function bulletinsStep(race: Race) {
+  if (race.phase !== 'racing') return;
+  if (race.simT - race.lastBulletinT < BULLETIN_H * 3600) return;
+  race.lastBulletinT = race.simT;
+  const biomes: Record<number, string> = { 0: 'Plaine', 1: 'Forêt', 2: 'Désert', 3: 'Altitude' };
+  let lead = 0;
+  for (const c of race.cars) if (c.s > lead) lead = c.s;
+  const parts: string[] = [];
+  for (let d = 0; d < 3; d++) {
+    const s = lead + d * 70_000; // 3 tronçons de 70 km devant la tête
+    const rain = weatherRain(race.seed, s);
+    const b = Math.floor(race.trk.biomeAt(Math.min(s, race.trk.finishS - 1)));
+    parts.push(`${Math.round(s / 1000)} km ${biomes[b] ?? '?'}${rain ? ' (pluie)' : ''}`);
+  }
+  const msg = `BULLETIN D'ÉTAPE — prochains tronçons : ${parts.join(' · ')}`;
+  for (const c of race.cars) log(c, race.simT, msg);
+}
+
 export function stepRace(race: Race, nSteps: number) {
   for (let n = 0; n < nSteps; n++) {
     /* déroulé : preparation = compte à rebours réel ; on ne simule pas
@@ -486,6 +766,8 @@ export function stepRace(race: Race, nSteps: number) {
     const hour = parisHour(race);
     for (const car of race.cars) stepCar(race, car, hour, DT);
     resolvePairs(race);
+    budgetStep(race, DT);
+    bulletinsStep(race);
     if (!race.finished && race.cars.length > 0 && race.cars.every((c) => c.st === 'finish')) {
       race.finished = true;
       race.phase = 'finished';
@@ -522,6 +804,8 @@ type SerializedRace = Pick<Race, 'seed' | 'totalKm' | 'simT' | 'doneSteps' | 'st
   config: RaceConfig;
   phase: RacePhase;
   departed: boolean;
+  rngCalls: number;
+  lastBulletinT: number;
 };
 
 export function serializeRace(race: Race): string {
@@ -537,6 +821,8 @@ export function serializeRace(race: Race): string {
     config: race.config,
     phase: race.phase,
     departed: race.departed,
+    rngCalls: race.rng.calls,
+    lastBulletinT: race.lastBulletinT,
     cars: race.cars.map((c) => ({ ...c })),
     nextPlanId: planIdNext,
   } satisfies SerializedRace);
@@ -550,6 +836,10 @@ export function deserializeRace(raw: string): Race {
   race.finished = d.finished;
   race.phase = d.phase ?? (d.simT > 0 ? 'racing' : 'preparation');
   race.departed = d.departed ?? race.phase !== 'preparation';
+  race.lastBulletinT = d.lastBulletinT ?? 0;
+  /* reprise bit à bit : on rejoue les tirages déjà consommés (ADR 0004) */
+  const calls = d.rngCalls ?? 0;
+  for (let i = 0; i < calls; i++) race.rng();
   race.endSimT = d.endSimT ?? Infinity;
   race.cars = d.cars.map((c) => ({ ...c })) as RaceCar[];
   planIdNext = Math.max(planIdNext, d.nextPlanId ?? 1000);

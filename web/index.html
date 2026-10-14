@@ -95,6 +95,14 @@
       <h2>Votre voiture</h2>
       <p class="mut" style="margin-bottom:6px">Donnez un nom d'équipe et choisissez une livrée — chaque couleur est unique dans la course.</p>
       <input id="teamName" placeholder="Nom d'équipe" maxlength="20">
+      <div class="frow" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0">
+        <div><label class="mut" style="font-size:12px">Gommes de départ</label>
+          <select id="tireChoice">
+            <option value="dures">Dures (usure lente)</option>
+            <option value="tendres">Tendres (grip haut)</option>
+            <option value="pluie">Pluie (si météo humide)</option>
+          </select></div>
+      </div>
       <div id="liveryGrid"></div>
       <p class="mut" id="configureMsg" style="font-size:12px"></p>
       <div class="row"><button class="primary" id="configureBtn">Inscrire ma voiture</button></div>
@@ -118,6 +126,10 @@
           <div class="bar"><div id="fatBar" style="background:#e76f51"></div></div></div>
         <div class="gauge"><label><span>Vitesse</span><span id="spdTxt"></span></label>
           <div class="bar"><div id="spdBar" style="background:#2a9d8f"></div></div></div>
+        <div class="gauge"><label><span>Budget</span><span id="budTxt"></span></label>
+          <div class="bar"><div id="budBar" style="background:#9b5de5"></div></div></div>
+        <div class="gauge"><label><span>Gommes <span id="tireName"></span></span><span id="tireTxt"></span></label>
+          <div class="bar"><div id="tireBar" style="background:#00bbf9"></div></div></div>
       </div>
       <div class="row">
         <div>
@@ -135,8 +147,22 @@
         </select>
         <button id="addAction">Ajouter</button>
       </div>
+      <div class="row">
+        <select id="tireChange">
+          <option value="">Monter des gommes au garage…</option>
+          <option value="tendres">Tendres (grip haut, usure rapide)</option>
+          <option value="dures">Dures (grip moindre, usure lente)</option>
+          <option value="pluie">Pluie (grip normal sous la pluie)</option>
+        </select>
+        <button id="addTire">Ajouter au plan</button>
+      </div>
       <div id="actions"></div>
       <div class="row"><button class="primary" id="savePlan">Appliquer le plan</button></div>
+      <div class="row">
+        <input id="cbMsg" placeholder="CB — message aux équipes à moins de 100 km">
+        <button id="cbSend" style="flex:0 0 70px">Émettre</button>
+      </div>
+      <div id="cbBox" class="events" style="max-height:110px;margin-top:6px"></div>
       <p class="mut" style="margin-top:8px;font-size:12px">
         La voiture exécute le plan en continu, connecté ou non. Sans connexion
         de votre part pendant la durée de survie, elle s'arrête à un point d'arrêt
