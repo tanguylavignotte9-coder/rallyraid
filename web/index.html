@@ -44,6 +44,23 @@
   .swatch.taken { opacity:.25; cursor:not-allowed; }
   #finalRank { font-size:44px; margin:10px 0; }
 
+  /* ===== TÉLÉMÉTRIE DEBUG ADMIN — diégétique, coin haut-gauche, admin-only ===== */
+  #tele { position:absolute; top:10px; left:10px; z-index:30; display:none;
+    background:#0b0a08d9; border:1px solid #2e2820; border-radius:6px; padding:8px 10px;
+    font-family:'Consolas','Menlo',monospace; font-size:11px; color:#9b845a;
+    min-width:180px; user-select:none; }
+  #tele .trow { display:flex; align-items:center; gap:6px; margin:3px 0; }
+  #tele .tlbl { width:34px; letter-spacing:.1em; }
+  #tele .tbar { flex:1; height:8px; background:#241f18; border-radius:2px; position:relative; overflow:hidden; }
+  #tele .tbar > i { position:absolute; top:0; bottom:0; transition:width .25s, left .25s; }
+  #tele #tThr i { background:#7fe07f; }
+  #tele #tBrk i { background:#e63946; }
+  #tele #tSteer i { background:#c8a45a; }
+  #tele #tGrip i { background:#e8a13a; }
+  #tele #tGrip i.hot { background:#e63946; }
+  #tele .absLed { width:10px; height:10px; border-radius:50%; background:#241f18; }
+  #tele .absLed.on { background:#e63946; box-shadow:0 0 6px #e63946; }
+
   /* ===== COCKPIT : monde 3D plein écran + tableau de bord LCD ===== */
   #cockpit { position:fixed; inset:0; display:none; }
   #scene3d { position:absolute; inset:0 0 13vh 0; }
@@ -153,6 +170,17 @@
 <!-- ===== COCKPIT : 3D plein écran + LCD + ordinateur du copilote ===== -->
 <div id="cockpit">
   <div id="scene3d"></div>
+
+  <!-- Télémétrie debug : visible uniquement du COMPTE admin (app.js),
+       valeurs de la voiture VUE (viewCar permet d'auditer une autre voiture) -->
+  <div id="tele">
+    <div class="trow"><span class="tlbl">ACC</span><div class="tbar" id="tThr"><i style="width:0"></i></div></div>
+    <div class="trow"><span class="tlbl">FRN</span><div class="tbar" id="tBrk"><i style="width:0"></i></div></div>
+    <div class="trow"><span class="tlbl">DIR</span><div class="tbar" id="tSteer"><i style="left:50%;width:0"></i></div></div>
+    <div class="trow"><span class="tlbl">GRIP</span><div class="tbar" id="tGrip"><i style="width:0"></i></div></div>
+    <div class="trow"><span class="tlbl">ABS</span><span class="absLed" id="tAbs"></span>
+      <span id="tLat" style="margin-left:8px">lat 0,0 m</span></div>
+  </div>
 
   <!-- Tableau de bord LCD diégétique -->
   <div id="dash">

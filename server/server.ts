@@ -129,7 +129,30 @@ type PublicCar = {
   d: number;
   brake: 0 | 1;
   weather: 'rain' | 'dry';
+  /* télémétrie PUBLIQUE (debug admin : accélérateur, frein,
+     direction, adhérence) — la conduite est observable de l'extérieur,
+     ce ne sont pas les jauges privées (carburant, budget…) */
+  thr: number;
+  brk: number;
+  grip: number;
+  abs: number;
+  steer: number;
+  lat: number;
 };
+
+/* Position réelle de la voiture : point de la chaussée + décalage
+   latéral d (+ à gauche ; normale gauche de (cos hd, sin hd) =
+   (−sin hd, cos hd)). Le cap de TRAJECTOIRE ajoute l'angle de dérive
+   (dRate / v) : la voiture ne pointe pas dans l'axe de la route
+   quand elle glisse latéralement vers la corde. Sans ce décalage,
+   pos3 = axe de la chaussée → la 3D rend la voiture « sur des rails ». */
+function carPos(c: RaceCar): { x: number; y: number; hd: number } {
+  const p = race.trk.roadPoint(c.s);
+  const nx = -Math.sin(p.hd);
+  const ny = Math.cos(p.hd);
+  const drift = Math.atan2(c.dRate, Math.max(1, c.v));
+  return { x: p.x + nx * c.d, y: p.y + ny * c.d, hd: p.hd + drift };
+}
 
 /* ce qu'un joueur voit des AUTRES : position, nom, km, état visible —
    jamais leurs jauges (vision : « des adversaires, on ne voit que
@@ -138,7 +161,7 @@ type PublicCar = {
    polls, et le dead reckoning 3D en a BESOIN pour interpoler entre
    les requêtes (v: 0 en dur = téléportage de v×1 s à chaque poll). */
 function publicCar(c: RaceCar, i: number): PublicCar {
-  const p = race.trk.roadPoint(c.s);
+  const p = carPos(c);
   return {
     id: c.id, rank: i + 1, name: c.name, color: c.color,
     km: c.s / 1000, v: c.v * 3.6, st: c.st, stopKind: c.stopKind,
@@ -149,6 +172,12 @@ function publicCar(c: RaceCar, i: number): PublicCar {
     d: c.d,
     brake: c.brkCmd > 0 ? 1 : 0,
     weather: weatherRain(race.seed, c.s) ? 'rain' : 'dry',
+    thr: c.thr,
+    brk: c.brkCmd,
+    grip: c.grip,
+    abs: c.abs,
+    steer: c.steer,
+    lat: c.d,
   };
 }
 
@@ -202,7 +231,9 @@ function buildMe(car: RaceCar): unknown {
       roll: car.roll,
       pitch: car.pitch,
       survivalStop: car.survivalStop,
-      pos: race.trk.roadPoint(car.s),
+      /* pos 2D : position RÉELLE (ligne d'apex — carPos), pas l'axe :
+         la mini-carte doit montrer l'ouverture → corde → sortie */
+      pos: carPos(car),
     },
   };
 }

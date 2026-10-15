@@ -435,11 +435,17 @@ function makeCarMesh(car) {
      spin sur rotation.x roule sur le bon axe. */
   wg.rotateZ(Math.PI / 2);
   const wm = new THREE.MeshLambertMaterial({ color: '#14171c' });
+  let fw = 0;
   for (const [x, z] of [[-0.95, 1.35], [0.95, 1.35], [-0.95, -1.35], [0.95, -1.35]]) {
     const w = new THREE.Mesh(wg, wm);
     w.position.set(x, 0.42, z);
+    /* ROUES AVANT (z > 0) BRAQUÉES : rotation.order YXZ pour que le
+       braquage (rotation.y, autour de la verticale) s'applique AVANT
+       le spin (rotation.x) — la roue roule dans la direction où elle
+       pointe. Le braquage suit la consigne steer exposée par le serveur. */
+    if (z > 0) { w.rotation.order = 'YXZ'; wheels.push(w); fw++; }
+    else wheels.push(w);
     g.add(w);
-    wheels.push(w);
   }
   const headMat = new THREE.MeshLambertMaterial({ color: '#fff7d0', emissive: 0x000000 });
   for (const x of [-0.6, 0.6]) {
@@ -470,7 +476,7 @@ function makeCarMesh(car) {
   dust.scale.set(2.5, 1.2, 2.5);
   g.add(dust);
   scene.add(g);
-  return { group: g, wheels, headMat, brakeMat, dust, tgt: null };
+  return { group: g, wheels, frontWheels: wheels.slice(0, 2), headMat, brakeMat, dust, tgt: null };
 }
 
 /* setData(snap) : alimente les cibles — le poll serveur (1 s) est LA
@@ -493,6 +499,7 @@ function syncTargets(d) {
     m.tgt = {
       x: src.pos3.x, y: src.pos3.z, z: src.pos3.y, hd: src.hd,
       v: (meC ? meC.v : (c.v ?? 0)) / 3.6,
+      steer: c.steer ?? 0,   /* braquage des roues avant (télémétrie) */
       t: performance.now(),   /* la cible est un ÉCHANTILLON d'un mouvement
                                   continu, pas un point d'arrivée */
     };
@@ -553,6 +560,11 @@ function animateCars(dt, now) {
        rotation.y = PI/2 - hd aligne l'avant sur (cos hd, 0, sin hd). */
     m.group.rotation.y = Math.PI / 2 - m.rhd;
     for (const w of m.wheels) w.rotation.x += (m.v / 0.42) * dt;
+    /* ROUES AVANT BRAQUÉES : steer × 0,35 rad (défense 0 si absent —
+       snapshot ancien). YXZ : le braquage vertical s'applique avant
+       le spin, la roue roule où elle pointe. */
+    const steerAng = (m.tgt.steer ?? 0) * 0.35;
+    for (const w of m.frontWheels) w.rotation.y = steerAng;
   }
 }
 

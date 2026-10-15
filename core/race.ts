@@ -19,7 +19,7 @@
    l'état est sérialisable pour la reprise serveur.
 */
 import {
-  speedTarget, driveStep, lateralStep, raceLineTarget, draftMul,
+  speedTarget, driveStep, lateralStep, cosmeticsStep, raceLineTarget, draftMul,
   DT, CAR_L, mulberry32,
   type KinCar,
 } from './engine.ts';
@@ -594,6 +594,13 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   const hw = trk.wAt(car.s) - 1.05;
   dT = Math.max(-hw, Math.min(hw, dT));
   lateralStep(car, dT, dt);
+  /* ROULIS/TANGAGE : sans cosmeticsStep, roll/pitch restent à 0 et
+     la voiture ne penche JAMAIS en virage ni au freinage — le rendu
+     3D lit ces champs (suspension cosmétique). Juste après
+     lateralStep : le roulis dépend de la consigne latérale, le
+     tangage de l'accélération/freinage. Déterministe, sérialisation
+     inchangée (roll/pitch déjà persistés). */
+  cosmeticsStep(trk, car, dt);
   car.s += car.v * dt;
 
   car.fatigue += dt / 3600;

@@ -108,6 +108,32 @@ function fmtDur(s) {
   return `${h} h ${String(m).padStart(2, '0')}`;
 }
 
+/* Télémétrie debug admin : valeurs de la voiture VUE (moi par défaut,
+   ou la cible de viewCar — l'admin peut auditer la conduite d'une
+   autre voiture). Les barres lisser leur LARGEUR (~0,25 s CSS) : le
+   lissage des positions existe déjà, les barres n'ont pas besoin
+   d'interpoler les valeurs. */
+function renderTele() {
+  if (me?.level !== 'admin') return;
+  const viewed = snap.me ?? null;
+  if (!viewed) { $('tele').style.display = 'none'; return; }
+  $('tele').style.display = 'block';
+  $('tThr').firstElementChild.style.width = `${Math.min(1, Math.max(0, viewed.thr ?? 0)) * 100}%`;
+  $('tBrk').firstElementChild.style.width = `${Math.min(1, Math.max(0, viewed.brk ?? 0)) * 100}%`;
+  /* DIR zéro-centrée : part du centre vers la gauche (steer < 0) ou
+     la droite (steer > 0) */
+  const st = Math.min(1, Math.max(-1, viewed.steer ?? 0));
+  const si = $('tSteer').firstElementChild;
+  si.style.left = st < 0 ? `${50 + st * 50}%` : '50%';
+  si.style.width = `${Math.abs(st) * 50}%`;
+  const gr = Math.min(1, Math.max(0, viewed.grip ?? 0));
+  const gi = $('tGrip').firstElementChild;
+  gi.style.width = `${gr * 100}%`;
+  gi.classList.toggle('hot', gr > 0.9);
+  $('tAbs').classList.toggle('on', !!viewed.abs);
+  $('tLat').textContent = `lat ${(viewed.lat ?? 0).toFixed(1).replace('.', ',')} m`;
+}
+
 function render() {
   const carCount = snap.cars.length;
   $('gridInfo').textContent = `${carCount}/${snap.maxCars} inscrites · ${snap.totalKm} km`;
@@ -148,6 +174,7 @@ function render() {
   }
 
   $('personalizeRow').style.display = me.autoCreated ? 'flex' : 'none';
+  renderTele();
   renderEvents(me.events);
   renderActions();
   if (snap.phase === 'preparation') drawProfile();
@@ -766,6 +793,9 @@ async function initMe() {
      overlays (configuration, podium) — jamais visibles d'un joueur
      ou d'un super (display='' retire le display:none inline) */
   if (me.level === 'admin') {
+    /* télémétrie debug : visible du seul COMPTE admin — un joueur qui
+       regarde une voiture admin ne doit rien voir (me = le compte) */
+    $('tele').style.display = 'block';
     for (const id of ['adminLink', 'adminLinkCfg', 'adminLinkFin']) {
       const el = $(id);
       if (el) el.style.display = '';
