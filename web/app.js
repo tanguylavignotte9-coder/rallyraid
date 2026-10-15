@@ -757,6 +757,15 @@ async function initMe() {
   const r = await fetch('/api/me');
   if (r.status === 401) { location.href = '/login.html'; return null; }
   me = await r.json();
+  /* accès admin-only : le bouton du bezel + les liens discrets des
+     overlays (configuration, podium) — jamais visibles d'un joueur
+     ou d'un super (display='' retire le display:none inline) */
+  if (me.level === 'admin') {
+    for (const id of ['adminLink', 'adminLinkCfg', 'adminLinkFin']) {
+      const el = $(id);
+      if (el) el.style.display = '';
+    }
+  }
   if (me.level !== 'player') {
     const sel = $('viewCar');
     sel.style.display = 'block';

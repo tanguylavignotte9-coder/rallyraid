@@ -193,6 +193,7 @@
     </div>
     <div id="dashBtns">
       <button class="bezelBtn" id="copBtn" title="Ordinateur du copilote">ORDINATEUR</button>
+      <a id="adminLink" class="bezelBtn" href="/admin.html" style="display:none;text-decoration:none;text-align:center">ADMIN</a>
       <select id="viewCar" style="display:none;width:auto;min-width:96px;min-height:40px;background:#1c1913;border-color:#2e2820;color:#9b845a"></select>
       <button class="bezelBtn" id="logoutBtn">SORTIE</button>
     </div>
@@ -296,7 +297,8 @@
     </div>
     <p class="mut" style="font-size:12px"><span id="conn" class="off">déconnecté</span>
       · <a href="/spectate.html" style="color:var(--mut)">Regarder en 3D</a>
-      · <a href="/login.html" style="color:var(--mut)">Changer de compte</a></p>
+      · <a href="/login.html" style="color:var(--mut)">Changer de compte</a>
+      · <a id="adminLinkCfg" href="/admin.html" style="display:none;color:var(--mut)">Admin</a></p>
   </div>
 </div>
 
@@ -308,6 +310,9 @@
       <div id="finalRank"></div>
       <table id="podium"><tbody></tbody></table>
       <div id="summary" style="margin-top:10px"></div>
+      <p class="mut" style="font-size:12px;margin-top:10px">
+        <a id="adminLinkFin" href="/admin.html" style="display:none;color:var(--mut)">Admin</a>
+      </p>
     </div>
   </div>
 </div>
