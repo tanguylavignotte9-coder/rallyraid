@@ -380,12 +380,19 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
   let lonG = 0; // part du budget grippée par le gaz ou le frein
   c.brkCmd = 0;
   c.abs = 0;
-  if (vT > c.v + 0.15) {
+  /* BANDE MORTE ADAPTATIVE : ±0,6 en ligne droite (pédales douces en
+     croisière), resserrée à ±0,15 en virage — là où l'adhérence est
+     déjà consommée par le latéral, une bande large relâcherait le
+     frein PLEIN avant l'apex et le frein léger (rogne à ~20 % par
+     l'ellipse) ne peut pas finir de descendre : la voiture entrait
+     0,3 m/s trop vite et dépassait le budget de grip à l'apex. */
+  const band = 0.6 * (1 - 0.75 * Math.min(latG, 1));
+  if (vT > c.v + 0.6) {
     const Fd = Math.min(FMAX, FEng) * kLong;
     F += Fd;
     c.thr = 1;
     lonG = Fd / FBud;
-  } else if (vT < c.v - 0.15) {
+  } else if (vT <= c.v - band) {
     const Fb = AMAX_BRAKE * (mu / MU) * M * kLong;
     F -= Fb;
     c.thr = 0;
@@ -407,7 +414,21 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
     c.brkCmd = Math.min(1, (M * (c.v - vT) * 3) / Math.max(AMAX_BRAKE * (mu / MU) * M, 1));
     lonG = Fb / FBud;
   } else {
-    c.thr = Math.max(0, Math.min(1, (drag + M * G * slope) / Math.max(FEng, 1)));
+    /* PÉDALES PROPORTIONNELLES : l'ancien hystérésis ±0,15 tout-ou-rien
+       faisait clignoter le gaz ~76 Hz autour de la vitesse cible en
+       croisière (scie sur la télémétrie). Ici la force suit
+       proportionnellement l'écart — la pédale devient un vrai
+       curseur, vMoy inchangée. */
+    const FdFull = Math.min(FMAX, FEng) * kLong;
+    /* clamp du gaz dans le MÊME budget que le frein (le cercle de
+       friction ne rognait que le frein) : la part latérale déjà
+       consommée (latG) limite le longi restant — le grip total
+       sqrt(latG² + lonG²) reste ≤ 1 */
+    const lonRoom = Math.max(0, Math.sqrt(Math.max(0, 1 - Math.min(latG, 1) ** 2)));
+    const Fd = Math.min(FdFull, M * (vT - c.v) * 3, lonRoom * FBud);
+    F += Fd;
+    c.thr = FdFull > 0 ? Math.max(0, Math.min(1, Fd / FdFull)) : 0;
+    lonG = Math.max(0, Fd) / FBud;
   }
   c.grip = Math.sqrt(latG * latG + lonG * lonG);
   const vPrev = c.v;
@@ -429,18 +450,27 @@ export function raceLineTarget(r: Track, s: number): number {
      corde, extérieur à la sortie. La corde se prend sur la courbure
      proche (10 m devant — turn-in tardif : la corde se prend EN entrant
      dans le virage), l'ouverture d'entrée sur la courbure lointaine
-     (70 m devant), le retour de sortie sur la courbure derrière (26 m) —
-     mais on n'ouvre QUE tant qu'on n'est pas encore engagé : la porte
-     (1 − inNow) éteint ouverture et sortie au cœur du virage, pour
-     qu'un virage voisin ne tire jamais la corde. Dans un S, ouverture
-     de sortie et d'entrée s'opposent au centre : transition nette. */
+     (70 m devant), le retour de sortie sur la courbure derrière (26 m). */
   const near = r.cvAt(s + 10);
   const far = r.cvAt(s + 70);
   /* double sonde arrière : la sortie extérieure se prolonge ~45 m après
      le virage (on ne se recentre pas en un claquement de doigts) */
   const past = r.cvAt(s - 20) + r.cvAt(s - 45);
-  const gate = 1 - Math.min(1, Math.abs(near) / 0.003);
-  return Math.max(-hw, Math.min(hw, KLAT * near - 170 * far * gate - 190 * past * gate));
+  /* porte DOUCE (sigmoïde) : la porte binaire collait la cible à la
+     butée d'un bord puis basculait instantanément sur l'autre — ce
+     sont les « murs invisibles ». La sigmoïde fond les transitions
+     ouverture → corde → sortie en un seul geste continu. */
+  const g = 1 / (1 + Math.pow(Math.abs(near) / 0.004, 4));
+  const th = Math.tanh;
+  /* amplitude RELATIVE à la largeur utilisable : KLAT·cv vaut jusqu'à
+     17 m — 9× la demi-chaussée de forêt ; chaque terme est borné à
+     90 % de hw : la corde ne « roule » plus sur le bord, elle le
+     touche à l'apex. KLAT reste le réglage de forme (à quelle
+     courbure la corde se creuse). */
+  const f = 0.9 * th((KLAT * near) / hw)
+    - 0.9 * th((170 * far) / hw) * g
+    - 0.9 * th((190 * past) / hw) * g;
+  return Math.max(-0.9, Math.min(0.9, f)) * hw;
 }
 export function lateralStep(c: KinCar, dT: number, dt: number) {
   /* LISSAGE DE LA CONSIGNE (le « mur invisible » de la corde) : au
@@ -452,18 +482,20 @@ export function lateralStep(c: KinCar, dT: number, dt: number) {
      cible passe par un lag du premier ordre (τ = 0,12 s). La LIGNE
      (raceLineTarget) ne change pas d'un mètre — corde, fits et
      anti-collision la lisent comme avant ; seul le suivi est lissé. */
-  c.dSm += (dT - c.dSm) * Math.min(1, dt / 0.12);
+  c.dSm += (dT - c.dSm) * Math.min(1, dt / 0.15);
   dT = c.dSm;
-  /* plafond latéral plus généreux à basse vitesse : l'ouverture→corde→
-     sortie balaye ±2 m dans une épingle prise à 15 m/s — il FAUT ces
-     1,5 m/s de dérive, sinon la voiture patine hors de sa ligne */
-  const dRateMax = Math.max(0.4, Math.min(3.2, 0.1 * c.v));
-  /* retour d'état CRITIQUEMENT AMORTI : acc = err/T² − 2·dRate/T (T = 0,35 s)
+  /* plafond latérale relevé : la capacité d'AVANT (3,2 m/s, acc ±7)
+  était étranglée sous la demande du contrôleur ζ=1 (~18 m/s²) dans
+  les transitions ouverture→corde→ sortie — la voiture traversait
+  les bascules en retard, direction saturée 12 % du temps en forêt
+  à 190 km/h. 5 m/s et ±12 laissent enfin la voiture suivre sa
+  ligne sans patiner hors de celle-ci à basse vitesse. */
+  const dRateMax = Math.max(0.4, Math.min(5, 0.15 * c.v));
+  /* retour d'état CRITIQUEMENT AMORTI : acc = err/T² − 2·dRate/T (T = 0,3 s)
      → ζ = 1 exactement : zéro dépassement, zéro toupillage — la voiture
-     se pose sur sa ligne et y reste. Accélération et vitesse latérale
-     bornées (crédibilité à 90 km/h). */
-  const T = 0.35;
-  const acc = Math.max(-7, Math.min(7, (dT - c.d) / (T * T) - (2 * c.dRate) / T));
+     se pose sur sa ligne et y reste. */
+  const T = 0.3;
+  const acc = Math.max(-12, Math.min(12, (dT - c.d) / (T * T) - (2 * c.dRate) / T));
   c.dRate = Math.max(-dRateMax, Math.min(dRateMax, c.dRate + acc * dt));
   c.d += c.dRate * dt;
   /* télémétrie : |steer| = 1 → la direction est saturée, la voiture ne
@@ -838,7 +870,13 @@ export function stepRival(g: Game, dt: number) {
     dT = gap > -CAR_L ? lane() : raceLineTarget(r, rv.s);
     if (rv.t > 7) {
       rv.s = pl.s - 50;
-      rv.v = pl.v;
+      /* TÉLÉPORTATION DANS LE BUDGET : atterrir à pl.v peut la jeter
+         en plein virage à une vitesse PHYSIQUEMENT au-delà de la
+         corde (grip 1,11 mesuré : atterrissage en épingle à 38,8 m/s
+         pour une corde à 37,1). La nouvelle vague démarre à SA
+         vitesse de chaîne au point d'arrivée — comme un pilote qui
+         rejoint la piste, pas qui s'y téléporte à fond. */
+      rv.v = Math.min(pl.v, speedTarget(r, rv.s, FLAT, 0.95));
       rv.st = 0;
       rv.t = 0;
       rv.apexS = -1;
