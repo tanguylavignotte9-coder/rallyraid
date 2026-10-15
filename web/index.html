@@ -5,33 +5,21 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Rally Raid — poste de stratège</title>
 <style>
-  :root { --bg:#10151c; --panel:#171e27; --line:#232d3a; --txt:#dce3ec; --mut:#7c8794; --acc:#e63946; --ok:#2a9d8f; }
+  :root { --bg:#10151c; --panel:#171e27; --line:#232d3a; --txt:#dce3ec; --mut:#7c8794; --acc:#e63946; --ok:#2a9d8f; --amber:#e8a13a; }
   * { box-sizing:border-box; margin:0; }
+  html, body { height:100%; overflow:hidden; }
   body { background:var(--bg); color:var(--txt); font:14px/1.45 system-ui,sans-serif; }
-  header { display:flex; align-items:center; gap:14px; padding:10px 16px;
-    border-bottom:1px solid var(--line); flex-wrap:wrap; }
-  header h1 { font-size:16px; letter-spacing:.08em; }
-  header .clock { font-variant-numeric:tabular-nums; color:var(--mut); }
   .mut { color:var(--mut); }
   #conn { font-size:12px; } .on { color:var(--ok); } .off { color:var(--acc); }
-  #flash { position:fixed; right:12px; bottom:12px; display:grid; gap:6px; max-width:340px; }
-  .flash { background:#1d2735; border:1px solid var(--line); border-left:3px solid var(--acc);
+  #flash { position:fixed; right:12px; top:64px; display:grid; gap:6px; max-width:340px; z-index:60; }
+  .flash { background:#1d2735ee; border:1px solid var(--line); border-left:3px solid var(--acc);
     padding:8px 12px; border-radius:6px; font-size:13px; animation:in .3s; }
   @keyframes in { from { opacity:0; transform:translateY(8px); } }
-  .layout { display:grid; grid-template-columns:300px 1fr; gap:12px; padding:12px; align-items:start; }
-  @media (max-width:900px) { .layout { grid-template-columns:1fr; } }
-  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
-  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.1em; color:var(--mut); margin-bottom:8px; }
   table { width:100%; border-collapse:collapse; }
-  td,th { padding:4px 6px; text-align:left; border-bottom:1px solid var(--line); }
+  td,th { padding:4px 6px; text-align:left; border-bottom:1px solid var(--line); font-size:13px; }
   tr.sel { background:#1d2735; }
   .dot { display:inline-block; width:10px; height:10px; border-radius:50%; }
   .km { font-variant-numeric:tabular-nums; }
-  #map { width:100%; height:420px; display:block; background:#0b0f14; border-radius:6px; touch-action:none; }
-  .gauges { display:grid; gap:8px; }
-  .gauge label { display:flex; justify-content:space-between; font-size:12px; color:var(--mut); }
-  .bar { height:10px; background:#0b0f14; border-radius:5px; overflow:hidden; }
-  .bar > div { height:100%; transition:width .5s; }
   select,input,button { background:#0b0f14; color:var(--txt); border:1px solid var(--line);
     border-radius:5px; padding:6px 8px; font:inherit; width:100%; }
   button { cursor:pointer; }
@@ -40,63 +28,260 @@
   .action-item { display:flex; gap:8px; align-items:center; padding:4px 0;
     border-bottom:1px solid var(--line); font-size:13px; }
   .action-item button { width:auto; padding:2px 8px; color:var(--mut); }
-  .events { max-height:220px; overflow-y:auto; font-size:12px; }
+  .events { max-height:100%; overflow-y:auto; font-size:12px; }
   .events p { padding:3px 0; border-bottom:1px solid var(--line); color:var(--mut); }
   .events p b { color:var(--txt); }
-  #superBar { display:none; align-items:center; gap:8px; margin-left:auto; }
-  #superBar select { width:180px; }
-  #adminLink { display:none; }
-  /* écran de configuration */
+
+  /* ===== écran configuration (inchangé, en overlay plein écran) ===== */
+  .view { position:fixed; inset:0; display:none; overflow:auto; background:var(--bg); z-index:50; }
+  .view .wrap { max-width:640px; margin:0 auto; padding:28px 16px; }
+  .view h1 { font-size:18px; letter-spacing:.08em; margin-bottom:12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; margin-bottom:12px; }
+  .panel h2 { font-size:12px; text-transform:uppercase; letter-spacing:.1em; color:var(--mut); margin-bottom:8px; }
   #liveryGrid { display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin:10px 0; }
   .swatch { height:40px; border-radius:6px; border:2px solid transparent; cursor:pointer; }
   .swatch.sel { border-color:#fff; }
   .swatch.taken { opacity:.25; cursor:not-allowed; }
-  .view { display:none; }
-  #countdown { font-size:22px; color:var(--ok); margin:8px 0; }
   #finalRank { font-size:44px; margin:10px 0; }
-  #summary p { padding:3px 0; font-size:13px; color:var(--mut); }
+
+  /* ===== COCKPIT : monde 3D plein écran + tableau de bord LCD ===== */
+  #cockpit { position:fixed; inset:0; display:none; }
+  #scene3d { position:absolute; inset:0 0 13vh 0; }
+  #scene3d canvas { display:block; }
+
+  /* Tableau de bord diégétique : ordinateur de bord de rallye,
+     LCD matrice de points ambre/vert, bezel noir mat. Aucune lib :
+     DOM+CSS maison, bargraphs par segments. */
+  #dash { position:absolute; left:0; right:0; bottom:0; height:13vh; min-height:96px;
+    background:linear-gradient(#14140f,#0b0a08 60%,#070605);
+    border-top:2px solid #2a2620; display:flex; align-items:stretch; gap:2px;
+    padding:6px 10px; font-family:'Consolas','Menlo',monospace; user-select:none; }
+  .lcdcell { display:flex; flex-direction:column; justify-content:center; padding:0 10px;
+    border-right:1px solid #241f18; min-width:0; }
+  .lcdcell:last-child { border-right:none; }
+  .lcdlabel { font-size:10px; letter-spacing:.18em; color:#6e5b35; margin-bottom:3px; }
+  .lcdnum { font-size:clamp(18px,3.2vh,30px); color:#7fe07f; font-variant-numeric:tabular-nums;
+    text-shadow:0 0 6px #2f7f2f66; line-height:1.05; white-space:nowrap; }
+  .lcdnum .u { font-size:.55em; color:#6e5b35; }
+  .lcdnum.amber { color:var(--amber); text-shadow:0 0 6px #a86a1566; }
+  .lcdnum.alert { color:var(--amber); animation:blink 1s steps(2) infinite; text-shadow:0 0 6px #a86a15aa; }
+  @keyframes blink { 50% { opacity:.35; } }
+  /* bargraph LCD à segments — les bargraphs changent de pas par
+     segments : rendu crédible et gratuit en perf */
+  .segbar { display:flex; gap:2px; margin-top:3px; }
+  .segbar i { width:7px; height:9px; background:#241f18; }
+  .segbar i.on { background:#7fe07f; box-shadow:0 0 3px #2f7f2f55; }
+  .segbar i.warn { background:var(--amber); box-shadow:0 0 3px #a86a1555; }
+  #lcdScroll { flex:1; overflow:hidden; display:flex; align-items:center; min-width:60px; }
+  #lcdScrollTxt { white-space:nowrap; color:#8a7442; font-size:clamp(10px,1.7vh,14px);
+    animation:tick 26s linear infinite; }
+  @keyframes tick { from { transform:translateX(100%); } to { transform:translateX(-100%); } }
+  #cbLed { width:12px; height:12px; border-radius:50%; background:#241f18; margin-left:8px; }
+  #cbLed.on { background:var(--amber); box-shadow:0 0 8px var(--amber); }
+  #cbLed.blink { animation:blink .7s steps(2) infinite; }
+  /* bezel : boutons discrets + LED CB — tailles tactiles ≥40px (ADR 0003) */
+  #dashBtns { display:flex; align-items:center; gap:8px; padding:0 6px; }
+  .bezelBtn { background:#1c1913; color:#9b845a; border:1px solid #2e2820; border-radius:6px;
+    min-width:44px; min-height:40px; font-size:11px; letter-spacing:.08em; cursor:pointer;
+    font-family:inherit; padding:4px 10px; }
+  .bezelBtn.pulse { animation:pulseSoft 1.6s ease-in-out infinite; border-color:var(--amber); color:var(--amber); }
+  @keyframes pulseSoft { 50% { box-shadow:0 0 10px #a86a1588; } }
+
+  /* ===== ORDINATEUR DU COPILOTE — fenêtre diégétique ===== */
+  /* Écran d'ordinateur portable vu de trois quarts : bezel sombre,
+     charnière esquissée, écran légèrement incliné, reflet discret.
+     Fermée par défaut en course — bouton ORDINATEUR du tableau de bord. */
+  #copilot { position:fixed; z-index:40; display:none;
+    right:14px; bottom:calc(13vh + 14px); width:min(560px,92vw); height:min(66vh,520px); }
+  #copilot.open { display:block; }
+  #copilot .lid { position:absolute; left:2%; right:2%; top:-7px; height:12px;
+    background:linear-gradient(#3a352c,#241f18); border-radius:4px 4px 0 0; }
+  #copilot .frame { position:absolute; inset:5px 0 8px 0; background:#111009;
+    border:1px solid #2e2820; border-radius:8px; transform:perspective(1200px) rotateX(1.4deg);
+    box-shadow:0 14px 34px #000a, inset 0 0 40px #00000055; overflow:hidden; display:flex; flex-direction:column; }
+  #copilot .screen { flex:1; overflow:hidden; background:
+    radial-gradient(120% 90% at 30% 0%, #ffffff08, transparent 60%),
+    linear-gradient(#14130d,#100f0b); position:relative; }
+  #copTitle { display:flex; align-items:center; gap:4px; padding:6px 8px; cursor:grab;
+    background:#1a1712; border-bottom:1px solid #2e2820; }
+  #copTitle .tabs { display:flex; gap:2px; flex:1; overflow-x:auto; }
+  .copTab { position:relative; background:transparent; border:1px solid transparent; color:#9b845a;
+    font-size:11px; letter-spacing:.1em; padding:7px 10px; min-height:36px; cursor:pointer;
+    font-family:'Consolas',monospace; width:auto; white-space:nowrap; }
+  .copTab.act { color:#14130d; background:#c8a45a; border-radius:4px; }
+  .copTab .badge { position:absolute; top:4px; right:4px; width:7px; height:7px; border-radius:50%;
+    background:var(--amber); box-shadow:0 0 6px var(--amber); display:none; }
+  .copTab.unread .badge { display:block; }
+  #copClose { width:auto; min-width:36px; min-height:36px; padding:4px 8px; background:transparent;
+    border:none; color:#9b845a; font-size:15px; cursor:pointer; }
+  #copGrip { width:16px; height:16px; cursor:nwse-resize; color:#4a4235; font-size:12px;
+    display:grid; place-items:center; }
+  .copPage { position:absolute; inset:0; display:none; padding:10px; overflow:auto; }
+  .copPage.act { display:block; }
+  #copilot .mut { color:#6e5b35; }
+  #copilot label.small { font-size:11px; color:#6e5b35; display:block; margin:6px 0 3px; }
+  #copilot select, #copilot input, #copilot button { background:#100f0b; border-color:#2e2820; color:#d8cba8; }
+  #map { width:100%; height:100%; display:block; background:#0b0f14; touch-action:none; border-radius:4px; }
+  #mapWrap { position:absolute; inset:0; padding:10px; }
+  #mapWrap canvas { position:absolute; inset:10px; width:calc(100% - 20px); height:calc(100% - 20px); }
+  #profWrap { padding:10px; }
+  #profMap { width:100%; height:48%; background:#0b0f14; border-radius:4px; }
+  #profAlt { width:100%; height:26%; background:#0b0f14; border-radius:4px; margin-top:6px; }
+  #profLegend { font-size:11px; color:#6e5b35; margin-top:4px; }
+
+  /* Mobile : tableau de bord compact UNE ligne, ordinateur en bottom-sheet */
+  @media (max-width:760px) {
+    #scene3d { inset:0 0 11vh 0; }
+    #dash { height:11vh; min-height:78px; overflow-x:auto; overflow-y:hidden; }
+    .lcdcell.hideM { display:none; }
+    #copilot { left:0; right:0; bottom:0; top:auto; width:100%; height:76vh;
+      transform:translateY(100%); transition:transform .28s ease; }
+    #copilot.open { transform:translateY(0); }
+    #copilot .frame { transform:none; border-radius:14px 14px 0 0; }
+  }
 </style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
 </head>
 <body>
-<header>
-  <h1>RALLY RAID</h1>
-  <span class="clock" id="clock">—</span>
-  <span class="mut" id="raceInfo"></span>
-  <span class="mut" id="gridInfo"></span>
-  <span id="conn" class="off">déconnecté</span>
-  <span id="superBar">
-    <span class="mut" style="font-size:12px">voir :</span>
-    <select id="viewCar"><option value="">— ma voiture —</option></select>
-  </span>
-  <a id="adminLink" href="/admin.html" style="display:none;color:var(--acc)">admin</a>
-  <a id="spectateLink" href="/spectate.html" style="color:var(--mut)">Regarder en 3D</a>
-  <button id="logoutBtn" style="width:auto">Quitter</button>
-</header>
 <div id="flash"></div>
-<div class="layout">
-  <div>
-    <div class="panel" style="margin-bottom:12px">
-      <h2>Classement</h2>
-      <table id="standings"><tbody></tbody></table>
+
+<!-- ===== COCKPIT : 3D plein écran + LCD + ordinateur du copilote ===== -->
+<div id="cockpit">
+  <div id="scene3d"></div>
+
+  <!-- Tableau de bord LCD diégétique -->
+  <div id="dash">
+    <div class="lcdcell" id="cellSpd">
+      <div class="lcdlabel">VITESSE</div>
+      <div class="lcdnum" id="lcdSpd">—<span class="u"> km/h</span></div>
     </div>
-    <div class="panel">
-      <h2>Journal — <span id="carName"></span></h2>
-      <div class="events" id="events"></div>
+    <div class="lcdcell">
+      <div class="lcdlabel">CARBURANT</div>
+      <div class="lcdnum" id="lcdFuel">—<span class="u"> L</span></div>
+      <div class="segbar" id="fuelSeg"></div>
+    </div>
+    <div class="lcdcell">
+      <div class="lcdlabel">GOMMES</div>
+      <div class="lcdnum" id="lcdTire" style="font-size:clamp(13px,2.2vh,20px)">—</div>
+      <div class="segbar" id="tireSeg"></div>
+    </div>
+    <div class="lcdcell hideM">
+      <div class="lcdlabel">VEILLE PILOTE</div>
+      <div class="lcdnum" id="lcdFat">—<span class="u"> h</span></div>
+      <div class="segbar" id="fatSeg"></div>
+    </div>
+    <div class="lcdcell hideM">
+      <div class="lcdlabel">BUDGET</div>
+      <div class="lcdnum" id="lcdBud">—<span class="u"> €</span></div>
+    </div>
+    <div class="lcdcell">
+      <div class="lcdlabel">POSITION</div>
+      <div class="lcdnum" id="lcdPos">—</div>
+    </div>
+    <div class="lcdcell">
+      <div class="lcdlabel">PARIS</div>
+      <div class="lcdnum" id="lcdClock" style="font-size:clamp(14px,2.4vh,22px)">—</div>
+    </div>
+    <div id="lcdScroll">
+      <span id="lcdScrollTxt">—</span>
+      <span id="cbLed" title="CB"></span>
+    </div>
+    <div id="dashBtns">
+      <button class="bezelBtn" id="copBtn" title="Ordinateur du copilote">ORDINATEUR</button>
+      <select id="viewCar" style="display:none;width:auto;min-width:96px;min-height:40px;background:#1c1913;border-color:#2e2820;color:#9b845a"></select>
+      <button class="bezelBtn" id="logoutBtn">SORTIE</button>
     </div>
   </div>
-  <div>
-    <div class="panel" style="margin-bottom:12px">
-      <h2>Carte</h2>
-      <canvas id="map"></canvas>
-      <div class="mut" style="margin-top:4px;font-size:12px">Molette : zoom · glisser : déplacer</div>
-    </div>
 
-    <!-- écran configuration première connexion -->
-    <div class="panel view" id="view-configure">
+  <!-- Ordinateur du copilote : fenêtre diégétique, fermée par défaut -->
+  <div id="copilot">
+    <div class="lid"></div>
+    <div class="frame">
+      <div id="copTitle">
+        <div class="tabs">
+          <button class="copTab act" data-page="pgMap">CARTE<span class="badge"></span></button>
+          <button class="copTab" data-page="pgPlan">STRATÉGIE<span class="badge"></span></button>
+          <button class="copTab" data-page="pgRank">CLASSEMENT<span class="badge"></span></button>
+          <button class="copTab" data-page="pgJournal">JOURNAL<span class="badge"></span></button>
+          <button class="copTab" data-page="pgCb">CB<span class="badge"></span></button>
+        </div>
+        <button id="copClose">✕</button>
+        <span id="copGrip">◤</span>
+      </div>
+      <div class="screen">
+        <div class="copPage act" id="pgMap">
+          <div id="mapWrap"><canvas id="map"></canvas></div>
+        </div>
+        <div class="copPage" id="pgPlan">
+          <label class="small">Curseur moteur (perf ↔ conso)</label>
+          <input type="range" id="power" min="0.3" max="1" step="0.05" value="1">
+          <label class="small">Ajouter au plan</label>
+          <div class="row" style="margin-top:0">
+            <select id="newAction">
+              <option value="refuelLow">Règle : ravitailler si réservoir bas</option>
+              <option value="sleepFat">Règle : dormir si fatigue haute</option>
+              <option value="refuelKm">Plan : plein au km…</option>
+              <option value="sleepKm">Plan : dormir au km… (7 h)</option>
+              <option value="repairKm">Plan : garage au km…</option>
+            </select>
+            <button id="addAction" style="flex:0 0 80px">Ajouter</button>
+          </div>
+          <div class="row" style="margin-top:6px">
+            <select id="tireChange">
+              <option value="">Monter des gommes au garage…</option>
+              <option value="tendres">Tendres (grip haut, usure rapide)</option>
+              <option value="dures">Dures (grip moindre, usure lente)</option>
+              <option value="pluie">Pluie (grip normal sous la pluie)</option>
+            </select>
+            <button id="addTire" style="flex:0 0 110px">Ajouter au plan</button>
+          </div>
+          <div id="actions"></div>
+          <div class="row" id="personalizeRow" style="display:none">
+            <button id="personalizeBtn" class="primary">Personnaliser ma voiture</button>
+          </div>
+          <div class="row"><button class="primary" id="savePlan">Appliquer le plan</button></div>
+          <p class="mut" style="margin-top:8px;font-size:11px">
+            La voiture exécute le plan en continu, connecté ou non.
+          </p>
+        </div>
+        <div class="copPage" id="pgRank">
+          <table id="standings"><tbody></tbody></table>
+        </div>
+        <div class="copPage" id="pgJournal">
+          <div class="events" id="events"></div>
+        </div>
+        <div class="copPage" id="pgCb">
+          <div class="row" style="margin-top:0">
+            <input id="cbMsg" placeholder="CB — message aux équipes à moins de 100 km">
+            <button id="cbSend" style="flex:0 0 80px">Émettre</button>
+          </div>
+          <div id="cbBox" class="events" style="margin-top:8px"></div>
+        </div>
+        <!-- Préparation : profil d'altitude complet, montré dans l'onglet CARTE -->
+        <div id="profWrap" style="display:none;position:absolute;inset:0;background:#100f0b">
+          <canvas id="profMap"></canvas>
+          <canvas id="profAlt"></canvas>
+          <p id="profLegend"></p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== écran configuration (inchangé) ===== -->
+<div class="view" id="view-configure">
+  <div class="wrap">
+    <h1>RALLY RAID <span class="mut" id="gridInfo" style="font-size:13px"></span></h1>
+    <div class="panel">
       <h2>Votre voiture</h2>
       <p class="mut" style="margin-bottom:6px">Donnez un nom d'équipe et choisissez une livrée — chaque couleur est unique dans la course.</p>
       <input id="teamName" placeholder="Nom d'équipe" maxlength="20">
-      <div class="frow" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:8px 0">
         <div><label class="mut" style="font-size:12px">Gommes de départ</label>
           <select id="tireChoice">
             <option value="dures">Dures (usure lente)</option>
@@ -109,83 +294,24 @@
       <div class="row"><button class="primary" id="configureBtn">Inscrire ma voiture</button></div>
       <p id="configureErr" style="color:var(--acc);font-size:13px"></p>
     </div>
+    <p class="mut" style="font-size:12px"><span id="conn" class="off">déconnecté</span>
+      · <a href="/spectate.html" style="color:var(--mut)">Regarder en 3D</a>
+      · <a href="/login.html" style="color:var(--mut)">Changer de compte</a></p>
+  </div>
+</div>
 
-    <!-- préparation : compte à rebours + grille -->
-    <div class="panel view" id="view-prep">
-      <h2>Avant-course</h2>
-      <div id="countdown">—</div>
-      <p class="mut" style="font-size:13px">Votre voiture est inscrite. Voici le parcours — profilez vos choix (gommes, plan) sur le terrain à venir.</p>
-      <canvas id="profMap" style="width:100%;height:200px;background:#0b0f14;border-radius:6px;margin-top:8px"></canvas>
-      <canvas id="profAlt" style="width:100%;height:90px;background:#0b0f14;border-radius:6px;margin-top:6px"></canvas>
-      <p class="mut" style="font-size:12px;margin-top:4px" id="profLegend"></p>
-    </div>
-
-    <!-- course : jauges + plan -->
-    <div class="panel view" id="view-race">
-      <h2 id="planTitle">Stratégie</h2>
-      <div class="gauges">
-        <div class="gauge"><label><span>Carburant</span><span id="fuelTxt"></span></label>
-          <div class="bar"><div id="fuelBar" style="background:#e9c46a"></div></div></div>
-        <div class="gauge"><label><span>Fatigue</span><span id="fatTxt"></span></label>
-          <div class="bar"><div id="fatBar" style="background:#e76f51"></div></div></div>
-        <div class="gauge"><label><span>Vitesse</span><span id="spdTxt"></span></label>
-          <div class="bar"><div id="spdBar" style="background:#2a9d8f"></div></div></div>
-        <div class="gauge"><label><span>Budget</span><span id="budTxt"></span></label>
-          <div class="bar"><div id="budBar" style="background:#9b5de5"></div></div></div>
-        <div class="gauge"><label><span>Gommes <span id="tireName"></span></span><span id="tireTxt"></span></label>
-          <div class="bar"><div id="tireBar" style="background:#00bbf9"></div></div></div>
-      </div>
-      <div class="row">
-        <div>
-          <label class="mut" style="font-size:12px">Curseur moteur (perf ↔ conso)</label>
-          <input type="range" id="power" min="0.3" max="1" step="0.05" value="1">
-        </div>
-      </div>
-      <div class="row">
-        <select id="newAction">
-          <option value="refuelLow">Règle : ravitailler si réservoir bas</option>
-          <option value="sleepFat">Règle : dormir si fatigue haute</option>
-          <option value="refuelKm">Plan : plein au km…</option>
-          <option value="sleepKm">Plan : dormir au km… (7 h)</option>
-          <option value="repairKm">Plan : garage au km…</option>
-        </select>
-        <button id="addAction">Ajouter</button>
-      </div>
-      <div class="row">
-        <select id="tireChange">
-          <option value="">Monter des gommes au garage…</option>
-          <option value="tendres">Tendres (grip haut, usure rapide)</option>
-          <option value="dures">Dures (grip moindre, usure lente)</option>
-          <option value="pluie">Pluie (grip normal sous la pluie)</option>
-        </select>
-        <button id="addTire">Ajouter au plan</button>
-      </div>
-      <div id="actions"></div>
-      <div class="row" id="personalizeRow" style="display:none">
-        <button id="personalizeBtn" class="primary">Personnaliser ma voiture</button>
-      </div>
-      <div class="row"><button class="primary" id="savePlan">Appliquer le plan</button></div>
-      <div class="row">
-        <input id="cbMsg" placeholder="CB — message aux équipes à moins de 100 km">
-        <button id="cbSend" style="flex:0 0 70px">Émettre</button>
-      </div>
-      <div id="cbBox" class="events" style="max-height:110px;margin-top:6px"></div>
-      <p class="mut" style="margin-top:8px;font-size:12px">
-        La voiture exécute le plan en continu, connecté ou non. Sans connexion
-        de votre part pendant la durée de survie, elle s'arrête à un point d'arrêt
-        jusqu'à votre retour.
-      </p>
-    </div>
-
-    <!-- fin : podium + résumé -->
-    <div class="panel view" id="view-finish">
-      <h2>Course terminée</h2>
+<!-- ===== fin : podium en overlay par-dessus la 3D figée ===== -->
+<div class="view" id="view-finish" style="background:#10151cd8">
+  <div class="wrap">
+    <h1>Course terminée</h1>
+    <div class="panel">
       <div id="finalRank"></div>
       <table id="podium"><tbody></tbody></table>
       <div id="summary" style="margin-top:10px"></div>
     </div>
   </div>
 </div>
+
 <script type="module" src="app.js"></script>
 </body>
 </html>
