@@ -551,6 +551,10 @@ const server = http.createServer(async (req, res) => {
         cars: race.cars.map((c) => ({
           id: c.id, thr: c.thr, brk: c.brkCmd, grip: c.grip,
           abs: c.abs, steer: c.steer, lat: c.d, v: c.v * 3.6,
+          /* roll/pitch : l'animation 3D à 30 Hz en a besoin (roulis en
+             virage, tangage au freinage) — sans eux, ils ne venaient
+             que du poll 1 s et sautaient par pas d'une seconde */
+          roll: c.roll, pitch: c.pitch,
         })),
       });
       return;
@@ -724,8 +728,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-/* ---- boucle temps réel : départ donné par l'horloge serveur ---- */
-const STEP_BATCH = 120;
+/* ---- boucle temps réel : départ donné par l'horloge serveur ----
+   RAFALES DE ~33 ms (30 Hz) : stepRace est une boucle PURE de n pas
+   identiques (aucun état par lot — events, resolvePairs, budgetStep,
+   bulletinsStep sont TOUS par pas), donc découper 120 pas en 30×4
+   est BIT-À-BIT IDENTIQUE : même ordre des pas, même PRNG consommé,
+   déterminisme ADR 0004 intact. Avant, les 120 pas d'une seconde de
+   course partaient D'UN COUP toutes les secondes : race.cars restait
+   gelé 1 s et la télémétrie vivante (n°13) renvoyait en boucle les
+   mêmes valeurs. Bonus : le départ par horloge est précis à ~33 ms
+   au lieu d'une seconde. CPU inchangé : même travail total par
+   seconde, juste réparti en 30 rafales. */
+const STEP_BATCH = 4;
+const RAFALES_PAR_S = 120 / STEP_BATCH;   /* 30 : pour garder UN
+                                             snapshot par seconde */
+let rafales = 0;
 let acc2 = 0;
 let lastMs = Date.now();
 const CYCLE_MS = 1000 * STEP_BATCH * DT;
@@ -768,9 +785,16 @@ setInterval(() => {
     }
     if (race.phase !== 'finished') stepRace(race, STEP_BATCH);
   }
-  snapshot = buildSnapshot();
-  saveAcc += 1;
-  if (saveAcc >= SAVE_EVERY_S) { saveAcc = 0; save(); }
+  /* snapshot : NE PAS le reconstruire 30 fois/s — sa sémantique est
+     un cache 1 s (utilisateurs sans voiture). Une seule fois par
+     seconde : compteur de rafales modulo 30. */
+  rafales++;
+  if (rafales % RAFALES_PAR_S === 0) snapshot = buildSnapshot();
+  /* sauvegarde disque : on accumule les ms ÉCOULÉS (indépendant du
+     nombre de rafales) et on sauve toutes les 10 s — comportement
+     identique à avant, où chaque tick valait 1 s */
+  saveAcc += CYCLE_MS;
+  if (saveAcc >= SAVE_EVERY_S * 1000) { saveAcc = 0; save(); }
 }, Math.round(CYCLE_MS));
 
 server.listen(PORT, HOST, () => {

@@ -114,16 +114,26 @@ function fmtDur(s) {
    le poll 1 s reste LA source de vérité pour tout le reste ; la map
    live est alimentée par pollTele, avec FALLBACK sur les champs du
    snapshot 1 s (avant le premier pollTele, ou si le réseau 403). */
-const teleMap = new Map();   /* id -> {thr, brk, grip, abs, steer, lat, v} */
+const teleMap = new Map();   /* id -> {thr, brk, grip, abs, steer, lat, v, roll, pitch} */
+let teleBusy = false;        /* GARDE anti-empilement : jamais deux
+                                requêtes télémétrie en vol — si le RTT
+                                dépasse 33 ms (réseau lent), on SAUTE le
+                                tick au lieu d'empiler */
 
 async function pollTele() {
+  if (teleBusy) return;
+  teleBusy = true;
   try {
     const r = await api('/api/telemetry');
     if (!r || r.status !== 200) return;
     const d = await r.json();
     teleMap.clear();
     for (const c of d.cars) teleMap.set(c.id, c);
-  } catch { /* silence — on garde la dernière map */ }
+    /* la 3D anime braquage/roulis/tangage/stop à la même cadence */
+    if (world3dReady) W.setTele(teleMap);
+  } catch { /* silence — on garde la dernière map */ } finally {
+    teleBusy = false;
+  }
   renderTele();
 }
 
@@ -814,7 +824,7 @@ async function initMe() {
     /* debug 8 Hz : interval lancé UNIQUEMENT pour le compte admin —
        joueur/super ne doivent AUCUN polling supplémentaire (l'endpoint
        les 403 de toute façon) */
-    setInterval(pollTele, 150);
+    setInterval(pollTele, 33);   /* ~30 Hz : la simulation serveur tourne en rafales de 33 ms */
     $('tele').style.display = 'block';
     for (const id of ['adminLink', 'adminLinkCfg', 'adminLinkFin']) {
       const el = $(id);

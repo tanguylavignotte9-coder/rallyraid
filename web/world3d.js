@@ -702,6 +702,24 @@ export function getFollow() { return followId; }
 
 export async function refreshWorldNow() { return refreshWorld(); }
 
+/* Télémétrie 30 Hz (debug admin) : anime braquage, roulis, tangage et
+   feu stop SANS toucher à la position — le dead reckoning sur le poll
+   1 s reste LA référence des positions. ⚠️ la télémétrie est en KM/H,
+   m.tgt.v est en M/S (comme dans syncTargets) : division par 3,6
+   OBLIGATOIRE, sans elle la voiture « téléporterait ». Les ids absents
+   de la map ne sont pas touchés (défense). */
+export function setTele(map) {
+  for (const [id, t] of map) {
+    const m = carMeshes.get(id);
+    if (!m || !m.tgt || !t) continue;
+    m.tgt.steer = t.steer ?? 0;
+    m.tgt.v = (t.v ?? 0) / 3.6;
+    m.group.rotation.x = t.pitch ?? 0;
+    m.group.rotation.z = t.roll ?? 0;
+    m.brakeMat.emissive.setHex(t.brk > 0 ? 0xff2222 : 0x000000);
+  }
+}
+
 /* Nettoyage complet : une page, un cycle de vie WebGL. */
 export function dispose() {
   loopOn = false;

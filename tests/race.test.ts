@@ -325,3 +325,19 @@ test("plan : l'action gommes survit à setPlan et se monte au garage", () => {
   assert.ok(c.budget < b0, `facturée (≈ ${(b0 - c.budget).toFixed(0)} €)`);
   assert.ok(!c.plan.actions.some((a) => a.type === 'tires'), 'action consommée');
 });
+
+/* DÉCOUPAGE EN RAFALES (n°14) : le serveur exécute la simulation en
+   rafales de ~33 ms (30 × 4 pas) au lieu d'un lot d'une seconde
+   (120 pas). Ce test garantit À VIE que les deux cadençages sont
+   BIT-À-BIT IDENTIQUES : stepRace est une boucle PURE de n pas (aucun
+   état par lot). Si quelqu'un introduit un état par lot dans
+   stepRace, ce test devient rouge et le cadençage serveur casse le
+   déterminisme ADR 0004. */
+test('course : rafales 30x4 identiques au lot 120 (découpage pur)', () => {
+  const a = race2cars(11);
+  const b = race2cars(11);
+  stepRace(a, 120);                    // un lot d'une seconde
+  for (let i = 0; i < 30; i++) stepRace(b, 4);  // 30 rafales de 33 ms
+  assert.equal(serializeRace(a), serializeRace(b),
+    '120 pas d\'un coup === 30 x 4 pas en rafales, bit à bit');
+});
