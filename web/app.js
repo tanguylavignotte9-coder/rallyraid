@@ -259,8 +259,7 @@ function animMap(now) {
     if (!posRender.has) { posRender.x = me.pos.x; posRender.y = me.pos.y; posRender.has = true; }
     /* avance extrapolée le long du cap, v en m/s ; hd lu sur la
        voiture publique correspondante */
-    const pub = snap.cars.find((c) => c.id === me.id);
-    const hd = pub?.hd ?? 0;
+    const hd = me.hd ?? 0;
     posRender.x += Math.cos(hd) * (me.v / 3.6) * dt;
     posRender.y += Math.sin(hd) * (me.v / 3.6) * dt;
     /* convergence douce vers la position autoritaire du poll */
@@ -297,8 +296,8 @@ function draw() {
   /* autres voitures si l'API expose leur pos (admin/super) */
   for (const c of snap.cars ?? []) {
     if (snap.me && c.id === snap.me.id) continue;
-    if (c.pos) {
-      const [sx, sy] = w2s(c.pos.x, c.pos.y);
+    if (c.pos3) {
+      const [sx, sy] = w2s(c.pos3.x, c.pos3.y);
       ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 7);
       ctx.fillStyle = c.color; ctx.fill();
       ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.stroke();

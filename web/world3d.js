@@ -197,11 +197,16 @@ function buildRoad(group, d) {
     pos.push(p.x + nx * halfDirt, p.z + 0.02, p.y + nz * halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
   }
+  /* 4 sommets par point → 3 quads → 6 triangles, en sens ANTIHORAIRE
+     vu du ciel : normale (0, +1, 0) partout. L'ancien ordre (a, b,
+     a+1…) donnait Edge1 = avant F, Edge2 = latéral N, normale F×N
+     = (0, -1, 0) — tournée vers le BAS : backface culling, route
+     invisible (terrain, lui, avait le bon winding). */
   for (let i = 0; i + 1 < n; i++) {
     const a = i * 4, b = (i + 1) * 4;
-    idx.push(a, b, a + 1, a + 1, b, b + 1);
-    idx.push(a + 1, b + 1, a + 2, a + 2, b + 1, b + 2);
-    idx.push(a + 2, b + 2, a + 3, a + 3, b + 2, b + 3);
+    idx.push(a, a + 1, b, a + 1, b + 1, b);
+    idx.push(a + 1, a + 2, b + 1, a + 2, b + 2, b + 1);
+    idx.push(a + 2, a + 3, b + 2, a + 3, b + 3, b + 2);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -398,10 +403,15 @@ function makeCarMesh(car) {
   g.add(cabin);
   const wheels = [];
   const wg = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 8);
+  /* essieu sur X DANS LA GÉOMÉTRIE : l'ancien rotation.z = PI/2 sur
+     le mesh, combiné au spin sur rotation.y (Euler XYZ), faisait
+     tourner l'essieu autour de la VERTICALE — les roues « flottaient »
+     à ~66 rad/s au lieu de rouler. Avec la géométrie pré-tournée, le
+     spin sur rotation.x roule sur le bon axe. */
+  wg.rotateZ(Math.PI / 2);
   const wm = new THREE.MeshLambertMaterial({ color: '#14171c' });
   for (const [x, z] of [[-0.95, 1.35], [0.95, 1.35], [-0.95, -1.35], [0.95, -1.35]]) {
     const w = new THREE.Mesh(wg, wm);
-    w.rotation.z = Math.PI / 2;
     w.position.set(x, 0.42, z);
     g.add(w);
     wheels.push(w);
@@ -451,17 +461,19 @@ function syncTargets(d) {
     seen.add(c.id);
     let m = carMeshes.get(c.id);
     if (!m) { m = makeCarMesh(c); carMeshes.set(c.id, m); }
-    /* cible en coordonnées monde : y = altitude z, z = y plan serveur */
+    const meC = d.me?.id === c.id ? d.me : null;
+    /* MA voiture : cible lue sur d.me (reconstruit À LA REQUÊTE,
+     donc frais) — l'entrée publique de cars peut être plus ancienne */
+    const src = meC ?? c;
     m.tgt = {
-      x: c.pos3.x, y: c.pos3.z, z: c.pos3.y, hd: c.hd,
-      v: (d.me?.id === c.id ? d.me.v : (c.v ?? 0)) / 3.6,
+      x: src.pos3.x, y: src.pos3.z, z: src.pos3.y, hd: src.hd,
+      v: (meC ? meC.v : (c.v ?? 0)) / 3.6,
     };
     /* premier rendu : sauter sur la cible — pas de lerp depuis
        l'origine (0,0,0), la voiture serait « arrivée en volant » */
     if (m.rx === undefined) {
       m.rx = m.tgt.x; m.ry = m.tgt.y; m.rz = m.tgt.z; m.rhd = m.tgt.hd;
     }
-    const meC = d.me?.id === c.id ? d.me : null;
     if (meC) {
       m.group.rotation.x = meC.pitch ?? 0;
       m.group.rotation.z = meC.roll ?? 0;
@@ -503,7 +515,7 @@ function animateCars(dt) {
     /* CORRECTIF 1 : l'avant du maillage est sur +Z local ;
        rotation.y = PI/2 - hd aligne l'avant sur (cos hd, 0, sin hd). */
     m.group.rotation.y = Math.PI / 2 - m.rhd;
-    for (const w of m.wheels) w.rotation.y += (m.v / 0.42) * dt;
+    for (const w of m.wheels) w.rotation.x += (m.v / 0.42) * dt;
   }
 }
 

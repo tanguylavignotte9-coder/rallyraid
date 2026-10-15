@@ -132,13 +132,16 @@ type PublicCar = {
 };
 
 /* ce qu'un joueur voit des AUTRES : position, nom, km, état visible —
-   jamais leurs jauges ni leur vitesse (vision : « des adversaires, on
-   ne voit que positions et écarts ») */
+   jamais leurs jauges (vision : « des adversaires, on ne voit que
+   positions et écarts »). La VITESSE reste publique : elle est de
+   toute façon déductible des positions échantillonnées sur deux
+   polls, et le dead reckoning 3D en a BESOIN pour interpoler entre
+   les requêtes (v: 0 en dur = téléportage de v×1 s à chaque poll). */
 function publicCar(c: RaceCar, i: number): PublicCar {
   const p = race.trk.roadPoint(c.s);
   return {
     id: c.id, rank: i + 1, name: c.name, color: c.color,
-    km: c.s / 1000, v: 0, st: c.st, stopKind: c.stopKind,
+    km: c.s / 1000, v: c.v * 3.6, st: c.st, stopKind: c.stopKind,
     configured: c.owner !== null,
     autoCreated: c.autoCreated,
     pos3: { x: p.x, y: p.y, z: race.trk.heightAt(c.s) },
@@ -174,8 +177,11 @@ function buildSnapshot() {
 function buildMe(car: RaceCar): unknown {
   const ranked = rankCars(race);
   const i = ranked.indexOf(car);
+  /* snapshot RECONSTRUIT à la requête : la cible du dead reckoning
+     3D doit être fraîche — l'ancien {...snapshot} étalait un cache
+     périmé (jusqu'à 1 s) et la 3D rattrapait en bondant */
   return {
-    ...snapshot,
+    ...buildSnapshot(),
     me: {
       ...publicCar(car, i),
       fuel: car.fuel,
