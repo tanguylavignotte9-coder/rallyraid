@@ -110,28 +110,44 @@ function fmtDur(s) {
 
 /* Télémétrie debug admin : valeurs de la voiture VUE (moi par défaut,
    ou la cible de viewCar — l'admin peut auditer la conduite d'une
-   autre voiture). Les barres lisser leur LARGEUR (~0,25 s CSS) : le
-   lissage des positions existe déjà, les barres n'ont pas besoin
-   d'interpoler les valeurs. */
+   autre voiture). SOURCE : /api/telemetry pollé à ~150 ms (8 Hz) —
+   le poll 1 s reste LA source de vérité pour tout le reste ; la map
+   live est alimentée par pollTele, avec FALLBACK sur les champs du
+   snapshot 1 s (avant le premier pollTele, ou si le réseau 403). */
+const teleMap = new Map();   /* id -> {thr, brk, grip, abs, steer, lat, v} */
+
+async function pollTele() {
+  try {
+    const r = await api('/api/telemetry');
+    if (!r || r.status !== 200) return;
+    const d = await r.json();
+    teleMap.clear();
+    for (const c of d.cars) teleMap.set(c.id, c);
+  } catch { /* silence — on garde la dernière map */ }
+  renderTele();
+}
+
 function renderTele() {
   if (me?.level !== 'admin') return;
   const viewed = snap.me ?? null;
   if (!viewed) { $('tele').style.display = 'none'; return; }
+  /* 8 Hz si la map live existe, sinon champs publics du snapshot 1 s */
+  const t = teleMap.get(viewed.id) ?? viewed;
   $('tele').style.display = 'block';
-  $('tThr').firstElementChild.style.width = `${Math.min(1, Math.max(0, viewed.thr ?? 0)) * 100}%`;
-  $('tBrk').firstElementChild.style.width = `${Math.min(1, Math.max(0, viewed.brk ?? 0)) * 100}%`;
+  $('tThr').firstElementChild.style.width = `${Math.min(1, Math.max(0, t.thr ?? 0)) * 100}%`;
+  $('tBrk').firstElementChild.style.width = `${Math.min(1, Math.max(0, t.brk ?? 0)) * 100}%`;
   /* DIR zéro-centrée : part du centre vers la gauche (steer < 0) ou
      la droite (steer > 0) */
-  const st = Math.min(1, Math.max(-1, viewed.steer ?? 0));
+  const st = Math.min(1, Math.max(-1, t.steer ?? 0));
   const si = $('tSteer').firstElementChild;
   si.style.left = st < 0 ? `${50 + st * 50}%` : '50%';
   si.style.width = `${Math.abs(st) * 50}%`;
-  const gr = Math.min(1, Math.max(0, viewed.grip ?? 0));
+  const gr = Math.min(1, Math.max(0, t.grip ?? 0));
   const gi = $('tGrip').firstElementChild;
   gi.style.width = `${gr * 100}%`;
   gi.classList.toggle('hot', gr > 0.9);
-  $('tAbs').classList.toggle('on', !!viewed.abs);
-  $('tLat').textContent = `lat ${(viewed.lat ?? 0).toFixed(1).replace('.', ',')} m`;
+  $('tAbs').classList.toggle('on', !!t.abs);
+  $('tLat').textContent = `lat ${(t.lat ?? 0).toFixed(1).replace('.', ',')} m`;
 }
 
 function render() {
@@ -795,6 +811,10 @@ async function initMe() {
   if (me.level === 'admin') {
     /* télémétrie debug : visible du seul COMPTE admin — un joueur qui
        regarde une voiture admin ne doit rien voir (me = le compte) */
+    /* debug 8 Hz : interval lancé UNIQUEMENT pour le compte admin —
+       joueur/super ne doivent AUCUN polling supplémentaire (l'endpoint
+       les 403 de toute façon) */
+    setInterval(pollTele, 150);
     $('tele').style.display = 'block';
     for (const id of ['adminLink', 'adminLinkCfg', 'adminLinkFin']) {
       const el = $(id);

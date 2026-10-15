@@ -100,6 +100,7 @@ async function loadRace() {
   $('cfgPoi').value = c.poiDensity;
   $('cfgNightMode').value = c.nightMode;
   $('cfgNightValue').value = c.nightValue;
+  $('cfgDayCap').value = c.dayCapKmh ?? 190;   /* défense : état sérialisé avant le champ */
   $('cfgMaxCars').value = c.maxCars;
   $('racePhase').textContent = d.phase;
   $('raceCars').textContent = d.cars;
@@ -133,6 +134,7 @@ $('resetForm').addEventListener('submit', async (e) => {
     poiDensity: Number($('cfgPoi').value),
     nightMode: $('cfgNightMode').value,
     nightValue: Number($('cfgNightValue').value),
+    dayCapKmh: Number($('cfgDayCap').value),
     maxCars: Number($('cfgMaxCars').value),
   };
   const r = await api('/api/admin/reset', {

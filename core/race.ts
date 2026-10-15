@@ -31,7 +31,8 @@ export const TANK_L = 520;
 export const FUEL_BASE_LPS = 0.02;   // conso de croisière à curseur 0
 export const FUEL_PWR_LPS = 0.08;    // conso ajoutée par unité de curseur
 export const FUEL_IDLE_LPS = 0.00035; // moteur tournant à l'arrêt
-export const V_CAP = 32;             // plafond aéro/développable (m/s)
+export const V_CAP = 32;             // échelle de stress de contact (m/s) —
+                                    // PLUS le plafond pilote : voir dayCapKmh
 export const NIGHT_CAP = 0.85;        // bride 22 h → 6 h (Paris)
 export const FATIGUE_SOFT_H = 14;    // début de la dégradation
 export const FATIGUE_EMERG_H = 30;   // arrêt de survie en bord de route
@@ -127,6 +128,9 @@ export type RaceConfig = {
   poiDensity: number;       // multiplicateur de densité des POI (1 = nominal)
   nightMode: NightMode;     // forme de la bride de nuit
   nightValue: number;       // ×0,85 en mode mul, km/h en mode cap
+  dayCapKmh: number;        // plafond JOUR en km/h (un rally raid roule
+                            // à 170-190, pas 115 — l'ancien V_CAP
+                            // bridait la course à 115,2 km/h)
   maxCars: number;
 };
 
@@ -143,6 +147,7 @@ export const DEFAULT_CONFIG: RaceConfig = {
   poiDensity: 1,
   nightMode: NIGHT_MODE_MUL,
   nightValue: NIGHT_CAP,
+  dayCapKmh: 190,
   maxCars: MAX_CARS,
 };
 
@@ -350,11 +355,15 @@ function carTrack(race: Race, car: RaceCar): RouteTrack {
    plafond km/h ; la fenêtre 22 h → 6 h (Paris) ne change pas */
 function nightCap(race: Race, hour: number): number {
   const night = hour >= 22 || hour < 6;
-  if (!night) return V_CAP;
+  /* PLAFOND JOUR PARAMÉTRABLE : ?? 190 en DÉFENSE — un race-state.json
+     sérialisé AVANT ce champ n'a pas la valeur (deserializeRace fait
+     {...DEFAULT_CONFIG, ...d.config} mais restons robustes) */
+  const dayCap = ((race.config.dayCapKmh ?? 190) / 3.6);
+  if (!night) return dayCap;
   if (race.config.nightMode === NIGHT_MODE_CAP) {
-    return Math.min(V_CAP, race.config.nightValue / 3.6);
+    return Math.min(dayCap, race.config.nightValue / 3.6);
   }
-  return V_CAP * race.config.nightValue;
+  return dayCap * race.config.nightValue;
 }
 
 function fatigueMul(fatigue: number): number {

@@ -537,6 +537,24 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (url.pathname === '/api/telemetry' && req.method === 'GET') {
+      /* TÉLÉMÉTRIE DEBUG ~8 Hz, ADMIN ONLY : lue DIRECTEMENT sur
+         race.cars (valeurs vivantes à 120 Hz) — le cache `snapshot`
+         est rafraîchi à la seconde, la boucle debug doit voir l'ABS
+         clignoter au Hz. Compact : les 7 champs numériques suffisent
+         (~2 Ko pour 40 voitures), pas de pos3 ni de nom ; le client
+         piochera la voiture vue. Jamais ajouté au snapshot 1 s des
+         joueurs. */
+      if (acc.level !== 'admin') { sendJSON(res, 403, { error: 'réservé aux admins' }); return; }
+      sendJSON(res, 200, {
+        simT: race.simT,
+        cars: race.cars.map((c) => ({
+          id: c.id, thr: c.thr, brk: c.brkCmd, grip: c.grip,
+          abs: c.abs, steer: c.steer, lat: c.d, v: c.v * 3.6,
+        })),
+      });
+      return;
+    }
     if (url.pathname === '/api/cars') {
       /* liste discrète des participants (sélecteur super utilisateur) */
       if (acc.level === 'player') { sendJSON(res, 403, { error: 'réservé aux supers' }); return; }
@@ -618,6 +636,9 @@ const server = http.createServer(async (req, res) => {
           poiDensity: Math.max(0.2, Math.min(3, Number(body.poiDensity ?? 1))),
           nightMode: body.nightMode === 'cap' ? 'cap' : 'mul',
           nightValue: Math.max(0.3, Math.min(1, Number(body.nightValue ?? 0.85))),
+          /* plafond JOUR : un rally raid roule à 170-190 km/h — clamp
+             60-300 pour garder une course crédible */
+          dayCapKmh: Math.max(60, Math.min(300, Number(body.dayCapKmh ?? 190))),
           maxCars: Math.max(2, Math.min(40, Number(body.maxCars ?? 40))),
         };
         if (body.nightMode === 'cap') cfg.nightValue = Math.min(300, Math.max(30, Number(body.nightValue ?? 110)));
