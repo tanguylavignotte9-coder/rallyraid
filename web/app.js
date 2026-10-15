@@ -52,6 +52,7 @@ async function poll() {
     const d = await r.json();
     if (r.status !== 200) return;
     snap = d;
+    snapAt = performance.now();   /* pour l'extrapolation de la mini-carte */
     $('conn').textContent = 'connecté'; $('conn').className = 'on';
     await fetchRoutePts();
     /* 3D : la voiture suivie est ma voiture (ou celle du sélecteur super) */
@@ -217,6 +218,7 @@ function renderFinish() {
 let view = { cx: 0, cy: 0, scale: 0.02 };
 let drag = null;
 let posRender = { x: 0, y: 0, has: false };
+let snapAt = 0;   /* horodatage du snapshot : même extrapolation que la 3D */
 let lastMapT = performance.now();
 
 function resize() {
@@ -257,15 +259,19 @@ function animMap(now) {
   const me = snap?.me;
   if (me) {
     if (!posRender.has) { posRender.x = me.pos.x; posRender.y = me.pos.y; posRender.has = true; }
-    /* avance extrapolée le long du cap, v en m/s ; hd lu sur la
-       voiture publique correspondante */
+    /* avance extrapolée le long du cap, v en m/s */
     const hd = me.hd ?? 0;
     posRender.x += Math.cos(hd) * (me.v / 3.6) * dt;
     posRender.y += Math.sin(hd) * (me.v / 3.6) * dt;
-    /* convergence douce vers la position autoritaire du poll */
+    /* convergence vers la position EXTRAPOLÉE (échantillon + v×âge) :
+       converger vers l'échantillon gelé du poll faisait osciller le
+       point exactement comme la 3D avant le même correctif */
+    const age = Math.max(0, (now - snapAt) / 1000);
+    const px = me.pos.x + Math.cos(me.hd) * (me.v / 3.6) * age;
+    const py = me.pos.y + Math.sin(me.hd) * (me.v / 3.6) * age;
     const k = 1 - Math.exp(-dt / 0.7);
-    posRender.x += (me.pos.x - posRender.x) * k;
-    posRender.y += (me.pos.y - posRender.y) * k;
+    posRender.x += (px - posRender.x) * k;
+    posRender.y += (py - posRender.y) * k;
     if (!drag) {
       view.cx += (posRender.x - view.cx) * k;
       view.cy += (posRender.y - view.cy) * k;

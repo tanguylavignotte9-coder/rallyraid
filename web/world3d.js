@@ -56,6 +56,7 @@ let quality = 1;
 let carMeshes = new Map();       // id -> {group, wheels, ...} + cibles interpolées
 let world = null;                // {group, pts} fenêtre glissante
 let winCenter = -1;
+let building = false;
 let lastFpsT = performance.now(), frames = 0;
 let orbitT = 0;
 const camPos = new THREE.Vector3();
@@ -141,37 +142,49 @@ async function fetchTrack(s0, len, step) {
 async function refreshWorld() {
   const car = followCar();
   if (!car) return;
-  const center = Math.max(0, car.km * 1000 - WIN * 0.35);
+  /* fenêtre AVANT-biaisée : 6 km devant, 2 km derrière — l'ancien
+     km - 2800 ne laissait que 1,2 km de route devant pour un seuil
+     de reconstruction de 2500 m : la voiture roulait dans le vide
+     (brouillard prématuré) au-delà du bord du monde */
+  const center = Math.max(0, car.km * 1000 + 2000);
   /* CORRECTIF 3 : le garde ne s'applique qu'APRÈS une première
      construction. Sinon |0-(-1)| = 1 < 2500 → retour immédiat et le
      monde n'existait pas avant le km 2,5 (le « 0 décor » au départ). */
   if (world && Math.abs(center - winCenter) < 2500) return;
-  winCenter = center;
-  decorRand = mulberry32(snap.seed ?? 42);
-
-  if (world) {
-    scene.remove(world.group);
-    world.group.traverse((o) => {
-      if (o.geometry) o.geometry.dispose();
-      if (o.material?.dispose) o.material.dispose();
-    });
-    world = null;
+  if (building) return;          /* une seule construction à la fois :
+                                    un poll pendant le rebuild ne lance
+                                    pas une seconde construction */
+  building = true;
+  try {
+    const s0 = Math.max(0, center - WIN / 2);
+    const r = await fetchTrack(s0, WIN, STEP);
+    if (!r) return;
+    const d = await r.json();
+    if (!d.pts?.length) return;
+    /* le NOUVEAU monde est construit et ajouté AVANT de retirer
+       l'ancien — plus jamais de scène vide pendant le rebuild (et
+       si le fetch échoue, l'ancien monde reste en place) */
+    const group = new THREE.Group();
+    poiLights = [];
+    decorRand = mulberry32(snap.seed ?? 42);
+    buildRoad(group, d);
+    buildTerrain(group, d);
+    buildProps(group, d);
+    buildPois(group, d.pois ?? []);
+    scene.add(group);
+    if (world) {
+      scene.remove(world.group);
+      world.group.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material?.dispose) o.material.dispose();
+      });
+    }
+    world = { group, pts: d.pts };
+    winCenter = center;   /* seulement après succès : un échec laisse
+                             l'ancien centre → retry au poll suivant */
+  } finally {
+    building = false;
   }
-
-  const s0 = Math.max(0, center - WIN / 2);
-  const r = await fetchTrack(s0, WIN, STEP);
-  if (!r) return;
-  const d = await r.json();
-  if (!d.pts?.length) return;
-
-  const group = new THREE.Group();
-  poiLights = [];
-  buildRoad(group, d);
-  buildTerrain(group, d);
-  buildProps(group, d);
-  buildPois(group, d.pois ?? []);
-  scene.add(group);
-  world = { group, pts: d.pts };
 }
 
 /* ---- route : ruban triangulaire + accotements + ponts/tunnels ---- */
@@ -263,6 +276,19 @@ function buildSegments(group, pts, segVal, makeMesh) {
   }
 }
 
+/* hauteur du terrain à distance latérale dist du point p (indice i).
+   UNE formule pour le maillage ET les décors — sinon les arbres
+   flottent ou s'enfoncent là où le terrain ondule. À j=0 le terrain
+   affleure juste SOUS la chaussée (posée à p.z + 0,05) ; la rampe
+   laisse le bruit prendre de l'amplitude en s'éloignant — plus de
+   mur qui enterre le bas-côté ni de vide sous la route. */
+function terrainY(p, i, dist) {
+  const j = Math.max(0, (dist - (p.w + 2)) / STEP);
+  const ramp = Math.min(1, j / 8);
+  const noise = Math.sin(i * 0.31 + j * 0.17) * Math.cos(j * 0.09 + i * 0.13);
+  return p.z - 0.3 - Math.max(0, j - 1) * 0.35 + noise * ramp * (4 + j * 1.4);
+}
+
 /* ---- terrain : manteau low-poly ~400 m de chaque côté ---- */
 function buildTerrain(group, d) {
   const pts = d.pts;
@@ -278,8 +304,7 @@ function buildTerrain(group, d) {
         const dist = p.w + 2 + j * STEP;
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
-        const noise = Math.sin(i * 0.31 + j * 0.17) * Math.cos(j * 0.09 + i * 0.13);
-        const y = p.z - Math.max(0, j - 1) * 0.35 + noise * (4 + j * 1.4) + decorRand() * 0.8;
+        const y = terrainY(p, i, dist) + decorRand() * 0.8;
         pos.push(x, y, zz);
         const c2 = base.clone();
         if (y > SNOW_ALT) c2.lerp(new THREE.Color('#eef2f5'), Math.min(1, (y - SNOW_ALT) / 80));
@@ -328,7 +353,7 @@ function buildProps(group, d) {
     const dist = p.w + 4 + r3 * 90;
     const x = p.x + nx * side * dist;
     const zz = p.y + nz * side * dist;
-    const y = p.z - dist * 0.06 + decorRand() * 2;
+    const y = terrainY(p, i, dist) + decorRand() * 2;
     const forestWave = Math.sin(i * 0.15) > -0.3;
     if (p.biome === 0 && r1 < 0.22) items.tree.push([x, y, zz, 0.7 + r3 * 0.6]);
     else if (p.biome === 1 && r1 < (forestWave ? 0.85 : 0.1)) items.pine.push([x, y, zz, 0.8 + r3 * 0.7]);
@@ -468,6 +493,8 @@ function syncTargets(d) {
     m.tgt = {
       x: src.pos3.x, y: src.pos3.z, z: src.pos3.y, hd: src.hd,
       v: (meC ? meC.v : (c.v ?? 0)) / 3.6,
+      t: performance.now(),   /* la cible est un ÉCHANTILLON d'un mouvement
+                                  continu, pas un point d'arrivée */
     };
     /* premier rendu : sauter sur la cible — pas de lerp depuis
        l'origine (0,0,0), la voiture serait « arrivée en volant » */
@@ -497,16 +524,26 @@ function syncTargets(d) {
 
 /* Dead reckoning : avance extrapolée le long du cap + convergence
    douce (~0,7 s) vers la cible autoritaire du dernier poll. */
-function animateCars(dt) {
+function animateCars(dt, now) {
   for (const m of carMeshes.values()) {
     if (!m.tgt) continue;
     m.v = m.tgt.v;
     m.rx += Math.cos(m.rhd) * m.v * dt;
     m.rz += Math.sin(m.rhd) * m.v * dt;
+    /* CIBLE EXTRAPOLÉE : converger vers l'échantillon gelé du poll
+       faisait osciller la vitesse rendue entre ~0,45v et ~1,9v à
+       chaque poll (simulation : 40-186 km/h pour une vraie à 100).
+       On converge vers où la voiture est MAINTENANT : échantillon
+       + v×âge — en régime établi l'erreur est nulle, la vitesse
+       rendue est CONSTANTE. */
+    const age = Math.max(0, (now - m.tgt.t) / 1000);
+    const px = m.tgt.x + Math.cos(m.tgt.hd) * m.tgt.v * age;
+    const pz = m.tgt.z + Math.sin(m.tgt.hd) * m.tgt.v * age;
+    const py = m.tgt.y;   /* altitude : pas d'extrapolation (pente inconnue) */
     const k = 1 - Math.exp(-dt / 0.7);
-    m.rx += (m.tgt.x - m.rx) * k;
-    m.ry += (m.tgt.y - m.ry) * k;
-    m.rz += (m.tgt.z - m.rz) * k;
+    m.rx += (px - m.rx) * k;
+    m.ry += (py - m.ry) * k;
+    m.rz += (pz - m.rz) * k;
     let dh = m.tgt.hd - m.rhd;
     while (dh > Math.PI) dh -= 2 * Math.PI;
     while (dh < -Math.PI) dh += 2 * Math.PI;
@@ -620,7 +657,7 @@ function loop() {
       renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
     }
   }
-  animateCars(dt);
+  animateCars(dt, now);
   updateCamera(dt);
   updateSky();
   renderer.render(scene, camera);
