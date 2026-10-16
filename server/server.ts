@@ -45,14 +45,22 @@ const LIVERY_PALETTE = [
 
 /* ---- comptes ---- */
 const accounts = new AccountStore(ACCOUNTS_FILE);
-const adminPass = accounts.ensureAdmin();
+/* mot de passe perdu ? --reset-admin-pass le régénère et l'affiche
+   (il est stocké HACHÉ : on ne peut jamais le ré-afficher) */
+const RESET_ADMIN = process.argv.includes('--reset-admin-pass');
+const adminPass = RESET_ADMIN ? accounts.resetAdminPassword() : accounts.ensureAdmin();
 if (adminPass !== null) {
   console.log('==========================================================');
-  console.log('  PREMIER LANCEMENT — compte admin créé');
+  console.log(RESET_ADMIN
+    ? '  RÉCUPÉRATION — mot de passe admin réinitialisé'
+    : '  PREMIER LANCEMENT — compte admin créé');
   console.log(`  identifiant : admin`);
   console.log(`  mot de passe : ${adminPass}`);
   console.log('  (affiché une seule fois — modifiable dans la page admin)');
   console.log('==========================================================');
+} else {
+  console.log('Compte admin déjà défini — mot de passe stocké haché, jamais ré-affiché.');
+  console.log('Mot de passe perdu ? relancez avec :  node --experimental-strip-types server/server.ts --reset-admin-pass');
 }
 
 /* ============================================================
@@ -629,11 +637,22 @@ const server = http.createServer(async (req, res) => {
         /* RESET de course — paramètres complets, confirmation par
            bouton côté interface ; ici tout est revalidé */
         const body = JSON.parse(await readBody(req) || '{}') as Partial<RaceConfig> & { startIso?: string };
+        /* DÉPART DU RESET : date explicite VALIDE exigée, sinon
+           défaut = maintenant + fenêtre de préparation (comme au
+           premier lancement). L'ancien défaut reprenait le
+           startEpochMs de la course morte — dans le passé pour une
+           course lancée, donc la nouvelle course repartait au tick
+           suivant (~33 ms) : le reset semblait « sans effet ». */
+        const prepMinutes = Math.max(0, Number(body.prepMinutes ?? 60));
+        const parsedStart = body.startIso ? Date.parse(body.startIso) : NaN;
+        const startEpochMs = Number.isNaN(parsedStart)
+          ? Date.now() + prepMinutes * 60_000
+          : parsedStart;
         const cfg: RaceConfig = {
           seed: Math.floor(Number(body.seed ?? race.config.seed)) || 42,
           totalKm: Math.min(50000, Math.max(50, Number(body.totalKm ?? 1000))),
-          startEpochMs: body.startIso ? Date.parse(body.startIso) : (race.config.startEpochMs ?? Date.now()),
-          prepMinutes: Math.max(0, Number(body.prepMinutes ?? 60)),
+          startEpochMs,
+          prepMinutes,
           endType: body.endType === 'duration' ? 'duration' : 'distance',
           endHours: Math.max(1, Number(body.endHours ?? 24 * 7)),
           survivalHours: Math.max(1, Number(body.survivalHours ?? 24)),
@@ -658,7 +677,7 @@ const server = http.createServer(async (req, res) => {
         Object.assign(race, fresh);
         snapshot = buildSnapshot();
         save();
-        sendJSON(res, 200, { ok: true, phase: race.phase });
+        sendJSON(res, 200, { ok: true, phase: race.phase, startEpochMs: race.config.startEpochMs });
         return;
       }
       /* EXPLORATEUR DE GRAINES : carte complète + stats, calculées par le

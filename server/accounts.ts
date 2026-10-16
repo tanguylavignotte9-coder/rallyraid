@@ -163,4 +163,27 @@ export class AccountStore {
     this.save();
     return true;
   }
+
+  /* RÉCUPÉRATION d'urgence : régénère le mot de passe du compte
+     « admin » (le recrée s'il a disparu) et le retourne en clair
+     pour affichage unique — appelé par le flag serveur
+     --reset-admin-pass. Le stockage reste haché ; les sessions
+     sont en mémoire et tombent de toute façon au redémarrage. */
+  resetAdminPassword(): string {
+    const pass = randomPassword();
+    const { hash, salt } = hashPassword(pass);
+    const existing = this.accounts.get('admin');
+    if (existing) {
+      existing.hash = hash;
+      existing.salt = salt;
+      existing.disabled = false;
+    } else {
+      this.accounts.set('admin', {
+        username: 'admin', hash, salt, level: 'admin',
+        disabled: false, carId: null, created: Date.now(),
+      });
+    }
+    this.save();
+    return pass;
+  }
 }

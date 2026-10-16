@@ -90,8 +90,14 @@ async function loadRace() {
   const c = d.config;
   $('cfgSeed').value = c.seed;
   $('cfgKm').value = c.totalKm;
-  const dStart = new Date(c.startEpochMs);
   const pad = (n) => String(n).padStart(2, '0');
+  /* préremplissage FUTUR : si la course en cours est partie, sa date
+     de départ est dans le passé — la renvoyer telle quelle faisait
+     repartir la nouvelle course immédiatement (reset « sans effet »).
+     On propose : la date configurée si elle est encore à venir,
+     sinon maintenant + 60 min. */
+  const startMs = c.startEpochMs > Date.now() ? c.startEpochMs : Date.now() + 60 * 60_000;
+  const dStart = new Date(startMs);
   $('cfgStart').value = `${dStart.getFullYear()}-${pad(dStart.getMonth() + 1)}-${pad(dStart.getDate())}T${pad(dStart.getHours())}:${pad(dStart.getMinutes())}`;
   $('cfgPrep').value = c.prepMinutes;
   $('cfgEnd').value = c.endType;
@@ -126,7 +132,6 @@ $('resetForm').addEventListener('submit', async (e) => {
   const body = {
     seed: Number($('cfgSeed').value),
     totalKm: Number($('cfgKm').value),
-    startIso: new Date($('cfgStart').value).toISOString(),
     prepMinutes: Number($('cfgPrep').value),
     endType: $('cfgEnd').value,
     endHours: Number($('cfgEndHours').value),
@@ -137,13 +142,22 @@ $('resetForm').addEventListener('submit', async (e) => {
     dayCapKmh: Number($('cfgDayCap').value),
     maxCars: Number($('cfgMaxCars').value),
   };
+  /* date sûre : un champ vide/invalide faisait JETER une exception à
+     toISOString() → POST jamais envoyé, clic muet. On n'envoie
+     startIso que si la date se parse, sinon le serveur applique son
+     défaut (maintenant + fenêtre de préparation). */
+  const t = Date.parse($('cfgStart').value);
+  if (!Number.isNaN(t)) body.startIso = new Date(t).toISOString();
   const r = await api('/api/admin/reset', {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!r) return;
   const d = await r.json();
-  if (r.status === 200) err('Nouvelle course créée — phase « préparation ».');
+  if (r.status === 200) {
+    $('resetConfirm').checked = false;   /* re-confirmation obligatoire au prochain reset */
+    err('Nouvelle course créée — départ le ' + new Date(d.startEpochMs).toLocaleString('fr-FR'));
+  }
   else err(d.error ?? 'échec du reset');
   loadRace();
 });
