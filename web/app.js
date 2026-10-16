@@ -23,7 +23,7 @@ const TANK = 520;
 let snap = null;
 let me = null;           // compte {user, level, carId}
 let selCarId = null;     // voiture vue (super : sélecteur du bezel)
-let draft = { power: 1, actions: [] };
+let draft = { power: 1, aggression: 'standard', actions: [] };
 let nextLocalId = -1;
 let lastEvents = [];
 let lastCbKeys = new Set();
@@ -694,6 +694,7 @@ function syncDraftFrom(plan) {
   if (!syncedWithCarId || syncedWithCarId !== snap.me.id) {
     draft = JSON.parse(JSON.stringify(plan));
     $('power').value = draft.power;
+    $('aggr').value = draft.aggression ?? 'standard';
     syncedWithCarId = snap.me.id;
   }
 }
@@ -748,6 +749,7 @@ $('addTire').onclick = () => {
 };
 
 $('power').oninput = (e) => { draft.power = Number(e.target.value); };
+$('aggr').onchange = (e) => { draft.aggression = e.target.value; };
 
 $('savePlan').onclick = async () => {
   const r = await api('/api/plan', {

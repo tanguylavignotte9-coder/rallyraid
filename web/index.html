@@ -249,6 +249,12 @@
         <div class="copPage" id="pgPlan">
           <label class="small">Curseur moteur (perf ↔ conso)</label>
           <input type="range" id="power" min="0.3" max="1" step="0.05" value="1">
+          <label for="aggr">Conduite</label>
+          <select id="aggr">
+            <option value="securite">Sécurité — ne double qu'à coup sûr</option>
+            <option value="standard" selected>Standard — dépasse quand c'est raisonnable</option>
+            <option value="agressif">Agressif — attaque souvent, risque accru</option>
+          </select>
           <label class="small">Ajouter au plan</label>
           <div class="row" style="margin-top:0">
             <select id="newAction">

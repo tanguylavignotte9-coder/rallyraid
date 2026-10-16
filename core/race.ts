@@ -82,6 +82,39 @@ export const CONTACT_COOLDOWN_S = 120;  // délai mini entre deux manœuvres à 
 export const CONTACT_SEV_HEAVY = 0.35;  // part des contacts « lourds »
 export const STOPANDGO_MIN = 2;         // pénalité stop-and-go (prochain POI)
 export const FINE_HEAVY = 1500;         // amende (faute lourde)
+
+/* ============ AGRESSIVITÉ DE CONDUITE (3 niveaux, plan du joueur) ============
+   Réglage du programmateur, comme le curseur moteur. Le niveau modifie
+   UNIQUEMENT la fréquence et l'audace des manœuvres — le risque de contact
+   PAR MANŒUVRE (CONTACT_P) est IDENTIQUE pour tous (décision 2026-10-16) :
+   l'agressif s'expose parce qu'il attaque plus souvent, dans des fenêtres
+   plus serrées, en collant au devancier.
+   gapMax (m)      : écart au devancier qui déclenche l'examen d'attaque ;
+   dvReq (m/s)     : avantage de vitesse exigé pour attaquer
+                     (peut être négatif : attaquer à vitesse égale) ;
+   margin (m)      : marge latérale visée AU-DELÀ de CAR_D ;
+   pressMps (m/s)  : bonus de vitesse pendant une manœuvre lancée ;
+   followDead (m)  : bande morte de la garde de suivi — la pression
+                     PERMANENTE : plus elle est petite, plus la voiture
+                     colle au devancier hors attaque (exposition au
+                     pincement resolvePairs) ;
+   cooldownS (s)   : délai mini entre deux manœuvres à risque. */
+export type Aggression = 'securite' | 'standard' | 'agressif';
+export const AGG: Record<Aggression, {
+  gapMax: number; dvReq: number; margin: number;
+  pressMps: number; followDead: number; cooldownS: number;
+}> = {
+  securite: { gapMax: 6,  dvReq: 1.5,  margin: 0.40, pressMps: 1.5, followDead: 3.5, cooldownS: 180 },
+  standard: { gapMax: 12, dvReq: -0.5, margin: 0.15, pressMps: 2.5, followDead: 2.0, cooldownS: CONTACT_COOLDOWN_S },
+  agressif: { gapMax: 20, dvReq: -1.5, margin: 0.05, pressMps: 4.0, followDead: 0.8, cooldownS: 60 },
+};
+
+/* normalisation : un plan ancien (sérialisé avant ce champ) ou invalide
+   conduit en 'standard' — JAMAIS de valeur par défaut cachée ailleurs */
+export function aggrOf(car: RaceCar): Aggression {
+  const a = (car.plan as { aggression?: Aggression }).aggression;
+  return a !== undefined && a in AGG ? a : 'standard';
+}
 export const CONTACT_SLOW_S = 30;       // ralentissement après contact léger
 export const PUNCTURE_CAP_KMH = 85;    // crevaison : mode dégradé (vision)
 
@@ -162,7 +195,7 @@ export type PlanAction =
   | { id: number; type: 'power'; power: number }
   | { id: number; type: 'tires'; tire: TireKind };
 
-export type Plan = { power: number; actions: PlanAction[] };
+export type Plan = { power: number; aggression?: Aggression; actions: PlanAction[] };
 
 export type CarStatus = 'run' | 'toStop' | 'stop' | 'dry' | 'finish';
 
@@ -239,6 +272,7 @@ export function defaultPlan(carId: number): Plan {
      (même course ⇒ même sérialisation, garantie ADR 0004) */
   return {
     power: 1,
+    aggression: 'standard',
     actions: [
       { id: carId * 1000 + 1, type: 'refuel', ifTag: 'fuelLow', threshold: 0.18 },
       { id: carId * 1000 + 2, type: 'sleep', ifTag: 'fatigueHigh', threshold: 20, hours: 7 },
@@ -598,11 +632,12 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
        bonus si une manœuvre est engagée. Remplace le suiveur aveugle
        qui fonçait dans le pare-chocs et se faisait pincer. */
   let dT = raceLineTarget(trk, car.s);
+  const A = AGG[aggrOf(car)];
   if (front) {
     const gap = front.s - car.s;
     const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - 1.05;
-    if (gap < 12 && car.v > front.v - 0.5) {
-      const want = CAR_D + 0.15;
+    if (gap < A.gapMax && car.v - front.v > A.dvReq) {
+      const want = CAR_D + A.margin;
       for (const sgn of [front.d >= 0 ? -1 : 1, front.d >= 0 ? 1 : -1]) {
         const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + sgn * want));
         if (Math.abs(t - front.d) >= CAR_D) {
@@ -613,12 +648,13 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
       }
     }
     if (gap < CAR_L && info.attackSide !== 0 && Math.abs(front.d - car.d) < 1.9) {
-      const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + info.attackSide * (CAR_D + 0.15)));
+      const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + info.attackSide * (CAR_D + A.margin)));
       if (Math.abs(t - front.d) >= CAR_D) dT = t;
     }
     const freeGap = gap - CAR_L;
     const vFront = (front.st === 'stop' || front.st === 'dry' || front.st === 'finish') ? 0 : front.v;
-    vT = Math.min(vT, vFront + Math.max(0, freeGap - 2) * 0.35 + (info.attackSide !== 0 ? 2.5 : 0));
+    vT = Math.min(vT, vFront + Math.max(0, freeGap - A.followDead) * 0.35
+      + (info.attackSide !== 0 ? A.pressMps : 0));
   }
   driveStep(trk, car, vT, dt, draft);
   const hw = trk.wAt(car.s) - 1.05;
@@ -655,7 +691,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   const attacking = info.attackSide !== 0 && front;
   if (attacking && !car.attackMan && car.attackCooldown <= 0) {
     car.attackMan = true;                 // manœuvre lancée
-    car.attackCooldown = CONTACT_COOLDOWN_S;
+    car.attackCooldown = A.cooldownS;
     if (race.rng() < CONTACT_P) applyContact(race, car, front, hour);
   }
   if (!attacking) car.attackMan = false;  // manœuvre terminée
@@ -920,6 +956,7 @@ export function setPlan(car: RaceCar, plan: Plan) {
      La valeur est validée (clé de TIRES), sinon l'action est rejetée. */
   car.plan = {
     power: Math.max(0.3, Math.min(1, plan.power)),
+    aggression: plan.aggression !== undefined && plan.aggression in AGG ? plan.aggression : 'standard',
     actions: plan.actions.filter((a) =>
       a.type === 'refuel' || a.type === 'sleep' || a.type === 'repair'
       || a.type === 'power'
