@@ -586,29 +586,41 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
 
   const cap = nightCap(race, hour) * fatigueMul(car.fatigue);
   const draft = front ? draftMul(car, front) : 1;
-  const vT = speedTarget(trk, car.s, cap, 0.75);
-  driveStep(trk, car, vT, dt, draft);
-
+  let vT = speedTarget(trk, car.s, cap, 0.75);
+  /* SUIVI ANTICIPATIF + DUEL CÔTÉ LIBRE — la décision se prend AVANT
+     driveStep (elle ne dépend que de front.d/hwDuel/gap/car.v) :
+     - côté d'attaque : on essaie d'abord le côté OPPOSÉ à celui où
+       est le meneur, puis l'autre ; on n'attaque QUE si la chaussée
+       offre réellement CAR_D de séparation (sinon : on suit, le
+       dépassement attend une zone assez large) ;
+     - cap de suivi : vitesse cible qui ferme l'écart en douceur et
+       tombe à zéro derrière un arrêt (stop/dry/finish), avec un petit
+       bonus si une manœuvre est engagée. Remplace le suiveur aveugle
+       qui fonçait dans le pare-chocs et se faisait pincer. */
   let dT = raceLineTarget(trk, car.s);
   if (front) {
     const gap = front.s - car.s;
-    /* DUEL LARGEUR-RÉELLE : un côte à côte exige CAR_D de séparation des
-       centres + une marge, et la chaussée doit être assez large pour les
-       DEUX voitures sur toute la zone. En dessous (forêt 1,8 m, altitude
-       1,1 m utilisables) pas d'attaque : on suit et on aspire, le
-       dépassement attend une zone assez large. Empêche la cible clampée
-       à ±hw qui superposait les voitures et re-armait la manœuvre (et
-       donc le RNG de contact) à chaque cooldown de 120 s. */
     const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - 1.05;
-    const sideOk = 2 * hwDuel >= CAR_D + 0.3;
-    if (sideOk && gap < 12 && car.v > front.v - 0.5) {
-      info.attackSide = front.d >= 0 ? 1 : -1;
-      dT = front.d + info.attackSide * 2.2;
+    if (gap < 12 && car.v > front.v - 0.5) {
+      const want = CAR_D + 0.15;
+      for (const sgn of [front.d >= 0 ? -1 : 1, front.d >= 0 ? 1 : -1]) {
+        const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + sgn * want));
+        if (Math.abs(t - front.d) >= CAR_D) {
+          info.attackSide = sgn;
+          dT = t;
+          break;
+        }
+      }
     }
-    if (sideOk && gap < CAR_L && Math.abs(front.d - car.d) < 1.9) {
-      dT = front.d + (front.d >= car.d ? 1 : -1) * 2.15;
+    if (gap < CAR_L && info.attackSide !== 0 && Math.abs(front.d - car.d) < 1.9) {
+      const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + info.attackSide * (CAR_D + 0.15)));
+      if (Math.abs(t - front.d) >= CAR_D) dT = t;
     }
+    const freeGap = gap - CAR_L;
+    const vFront = (front.st === 'stop' || front.st === 'dry' || front.st === 'finish') ? 0 : front.v;
+    vT = Math.min(vT, vFront + Math.max(0, freeGap - 2) * 0.35 + (info.attackSide !== 0 ? 2.5 : 0));
   }
+  driveStep(trk, car, vT, dt, draft);
   const hw = trk.wAt(car.s) - 1.05;
   dT = Math.max(-hw, Math.min(hw, dT));
   lateralStep(car, dT, dt);
@@ -743,12 +755,19 @@ function resolvePairs(race: Race) {
     if (frontStopped && latSep < 1.4) {
       /* clamp RELATIF : la voiture garée doit rester SUR la chaussée
          (90 % de la demi-largeur utilisable) — l'ancien clamp absolu
-         ±2,2 la plaçait hors route en altitude (hw 0,55) */
+         ±2,2 la plaçait hors route en altitude (hw 0,55). Poussée à
+         2,2 m : 1,4 ne séparait pas assez pour laisser passer le
+         coureur (besoin réel ≈ CAR_D) */
       const lim = Math.max(0.3, 0.9 * (race.trk.wAt(front.s) - 1.05));
-      front.d = front.d >= back.d ? Math.min(back.d + 1.4, lim) : Math.max(back.d - 1.4, -lim);
+      front.d = front.d >= back.d ? Math.min(back.d + 2.2, lim) : Math.max(back.d - 2.2, -lim);
       front.dSm = front.d;
     }
-    if (!frontStopped && gap < CAR_L && latSep < 1.9) {
+    /* pincement : TOUTE voiture (y compris garée) — défense dernière :
+       avec le suivi anticipatif du stepCar l'écart ne doit jamais s'y
+       retrouver, mais si ça arrive, on ne peut plus TRAVERSER une
+       voiture arrêtée (l'ancien !frontStopped laissait le coureur
+       passer au travers, gap mesuré à -3,6 km) */
+    if (gap < CAR_L && latSep < 1.9) {
       back.s = front.s - CAR_L;
       back.v = Math.min(back.v, front.v);
     }

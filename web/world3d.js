@@ -54,7 +54,7 @@ let isMobile = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent);
 let shadowsOn = !isMobile;
 let quality = 1;
 let carMeshes = new Map();       // id -> {group, wheels, ...} + cibles interpolées
-let world = null;                // {group, pts} fenêtre glissante
+let world = null;                // {group, pts, s0, step} fenêtre glissante
 let winCenter = -1;
 let building = false;
 let lastFpsT = performance.now(), frames = 0;
@@ -179,7 +179,7 @@ async function refreshWorld() {
         if (o.material?.dispose) o.material.dispose();
       });
     }
-    world = { group, pts: d.pts };
+    world = { group, pts: d.pts, s0, step: STEP };
     winCenter = center;   /* seulement après succès : un échec laisse
                              l'ancien centre → retry au poll suivant */
   } finally {
@@ -498,6 +498,10 @@ function syncTargets(d) {
     const src = meC ?? c;
     m.tgt = {
       x: src.pos3.x, y: src.pos3.z, z: src.pos3.y, hd: src.hd,
+      s: src.km * 1000, d: src.d ?? 0,   /* abscisse curviligne + décalage
+                                            latéral : le dead reckoning va
+                                            suivre LA ROUTE (km et d sont
+                                            déjà dans le snapshot public) */
       v: (meC ? meC.v : (c.v ?? 0)) / 3.6,
       steer: c.steer ?? 0,   /* braquage des roues avant (télémétrie) */
       t: performance.now(),   /* la cible est un ÉCHANTILLON d'un mouvement
@@ -507,6 +511,7 @@ function syncTargets(d) {
        l'origine (0,0,0), la voiture serait « arrivée en volant » */
     if (m.rx === undefined) {
       m.rx = m.tgt.x; m.ry = m.tgt.y; m.rz = m.tgt.z; m.rhd = m.tgt.hd;
+      m.rs = m.tgt.s;   /* abscisse curviligne rendue (dead reckoning route) */
     }
     if (meC) {
       m.group.rotation.x = meC.pitch ?? 0;
@@ -529,32 +534,82 @@ function syncTargets(d) {
   }
 }
 
-/* Dead reckoning : avance extrapolée le long du cap + convergence
-   douce (~0,7 s) vers la cible autoritaire du dernier poll. */
+/* Position sur la POLYLINE de la route pour l'abscisse curviligne rs
+   (mètres depuis le départ) : le monde est échantillonné tous les
+   STEP m depuis s0 — on interpole entre les deux échantillons qui
+   encadrent rs, puis on décale latéralement de `lat` mètres sur la
+   normale au cap interpolé. C'est LE correctif « la voiture coupe
+   les virages puis revient » : l'ancien dead reckoning en ligne
+   droite le long du cap accumulait 3,0–5,5 m d'erreur latérale par
+   seconde de poll dans les virages. Renvoie null si le monde n'est
+   pas prêt ou si rs sort de la fenêtre (fallback tangente). */
+function roadPos(rs, lat) {
+  if (!world?.pts?.length) return null;
+  const f = (rs - world.s0) / world.step;
+  if (f < 0 || f > world.pts.length - 1) return null;
+  const i = Math.min(world.pts.length - 2, Math.floor(f));
+  const u = f - i;
+  const a = world.pts[i], b = world.pts[i + 1];
+  let dh = b.hd - a.hd;
+  while (dh > Math.PI) dh -= 2 * Math.PI;
+  while (dh < -Math.PI) dh += 2 * Math.PI;
+  const hd = a.hd + dh * u;
+  const nx = -Math.sin(hd), nz = Math.cos(hd);
+  return {
+    x: a.x + (b.x - a.x) * u + nx * lat,   /* plan : x de l'API */
+    y: a.z + (b.z - a.z) * u,             /* altitude : z de l'API → Y three */
+    z: a.y + (b.y - a.y) * u + nz * lat,  /* plan : y de l'API → Z three */
+    hd,
+  };
+}
+
+/* Dead reckoning LE LONG DE LA ROUTE : l'abscisse curviligne m.rs
+   avance de v·dt, la position est PROJETÉE sur la polyline de la
+   route (roadPos) — la voiture rendue suit le tracé dans les
+   virages au lieu de couper en ligne droite hors piste puis de
+   « revenir » au poll. Convergence ~0,7 s vers l'abscisse cible
+   extrapolée (échantillon + v×âge) : corrige la dérive d'horloge
+   sans jamais téléporter. Fallback tangente si le monde n'est pas
+   encore construit ou si l'abscisse sort de la fenêtre de rendu. */
 function animateCars(dt, now) {
   for (const m of carMeshes.values()) {
     if (!m.tgt) continue;
     m.v = m.tgt.v;
-    m.rx += Math.cos(m.rhd) * m.v * dt;
-    m.rz += Math.sin(m.rhd) * m.v * dt;
-    /* CIBLE EXTRAPOLÉE : converger vers l'échantillon gelé du poll
-       faisait osciller la vitesse rendue entre ~0,45v et ~1,9v à
-       chaque poll (simulation : 40-186 km/h pour une vraie à 100).
-       On converge vers où la voiture est MAINTENANT : échantillon
-       + v×âge — en régime établi l'erreur est nulle, la vitesse
-       rendue est CONSTANTE. */
-    const age = Math.max(0, (now - m.tgt.t) / 1000);
-    const px = m.tgt.x + Math.cos(m.tgt.hd) * m.tgt.v * age;
-    const pz = m.tgt.z + Math.sin(m.tgt.hd) * m.tgt.v * age;
-    const py = m.tgt.y;   /* altitude : pas d'extrapolation (pente inconnue) */
     const k = 1 - Math.exp(-dt / 0.7);
-    m.rx += (px - m.rx) * k;
-    m.ry += (py - m.ry) * k;
-    m.rz += (pz - m.rz) * k;
-    let dh = m.tgt.hd - m.rhd;
-    while (dh > Math.PI) dh -= 2 * Math.PI;
-    while (dh < -Math.PI) dh += 2 * Math.PI;
-    m.rhd += dh * k;
+    if (m.rs === undefined) m.rs = m.tgt.s;
+    m.rs += m.v * dt;
+    /* CIBLE EXTRAPOLÉE en abscisse : on converge vers où la voiture
+       est MAINTENANT (échantillon + v×âge), pas vers l'échantillon
+       gelé — en régime établi l'erreur est nulle, la vitesse rendue
+       est CONSTANTE. */
+    const age = Math.max(0, (now - m.tgt.t) / 1000);
+    const sT = m.tgt.s + m.tgt.v * age;
+    m.rs += (sT - m.rs) * k;
+    const rp = roadPos(m.rs, m.tgt.d ?? 0);
+    if (rp) {
+      m.rx += (rp.x - m.rx) * k;
+      m.ry += (rp.y - m.ry) * k;
+      m.rz += (rp.z - m.rz) * k;
+      let dh = m.tgt.hd - m.rhd;
+      while (dh > Math.PI) dh -= 2 * Math.PI;
+      while (dh < -Math.PI) dh += 2 * Math.PI;
+      m.rhd += dh * k;
+    } else {
+      /* fallback : l'ancienne extrapolation tangente (monde pas
+         encore construit, abscisse hors fenêtre) */
+      m.rx += Math.cos(m.rhd) * m.v * dt;
+      m.rz += Math.sin(m.rhd) * m.v * dt;
+      const px = m.tgt.x + Math.cos(m.tgt.hd) * m.tgt.v * age;
+      const pz = m.tgt.z + Math.sin(m.tgt.hd) * m.tgt.v * age;
+      const py = m.tgt.y;
+      m.rx += (px - m.rx) * k;
+      m.ry += (py - m.ry) * k;
+      m.rz += (pz - m.rz) * k;
+      let dh = m.tgt.hd - m.rhd;
+      while (dh > Math.PI) dh -= 2 * Math.PI;
+      while (dh < -Math.PI) dh += 2 * Math.PI;
+      m.rhd += dh * k;
+    }
     m.group.position.set(m.rx, m.ry, m.rz);
     /* CORRECTIF 1 : l'avant du maillage est sur +Z local ;
        rotation.y = PI/2 - hd aligne l'avant sur (cos hd, 0, sin hd). */
