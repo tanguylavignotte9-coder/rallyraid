@@ -20,7 +20,7 @@
 */
 import {
   speedTarget, driveStep, lateralStep, cosmeticsStep, raceLineTarget, draftMul,
-  DT, CAR_L, mulberry32,
+  DT, CAR_L, CAR_D, mulberry32,
   type KinCar,
 } from './engine.ts';
 import {
@@ -592,11 +592,20 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   let dT = raceLineTarget(trk, car.s);
   if (front) {
     const gap = front.s - car.s;
-    if (gap < 12 && car.v > front.v - 0.5) {
+    /* DUEL LARGEUR-RÉELLE : un côte à côte exige CAR_D de séparation des
+       centres + une marge, et la chaussée doit être assez large pour les
+       DEUX voitures sur toute la zone. En dessous (forêt 1,8 m, altitude
+       1,1 m utilisables) pas d'attaque : on suit et on aspire, le
+       dépassement attend une zone assez large. Empêche la cible clampée
+       à ±hw qui superposait les voitures et re-armait la manœuvre (et
+       donc le RNG de contact) à chaque cooldown de 120 s. */
+    const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - 1.05;
+    const sideOk = 2 * hwDuel >= CAR_D + 0.3;
+    if (sideOk && gap < 12 && car.v > front.v - 0.5) {
       info.attackSide = front.d >= 0 ? 1 : -1;
       dT = front.d + info.attackSide * 2.2;
     }
-    if (gap < CAR_L && Math.abs(front.d - car.d) < 1.9) {
+    if (sideOk && gap < CAR_L && Math.abs(front.d - car.d) < 1.9) {
       dT = front.d + (front.d >= car.d ? 1 : -1) * 2.15;
     }
   }
@@ -664,7 +673,10 @@ function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: nu
   const stress = Math.min(1,
     attacker.fatigue / FATIGUE_EMERG_H * 0.5
     + (night ? 0.2 : 0)
-    + Math.min(0.3, attacker.v / V_CAP * 0.3));
+    /* V_CAP (32 m/s = 115 km/h) était l'ancien plafond pilote ; au
+       plafond jour 190 le terme était saturé en permanence et ne
+       modulait plus la gravité. */
+    + Math.min(0.3, attacker.v / ((race.config.dayCapKmh ?? 190) / 3.6) * 0.3));
   const heavy = race.rng() < CONTACT_SEV_HEAVY + stress * 0.2;
 
   /* attribution de la faute — règlement acté (vision.md) :
@@ -677,7 +689,12 @@ function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: nu
   const overlap = attacker.s - (defender.s - CAR_L); // avancée de l'attaquant
   const atApexOk = overlap > 1.2;                   // essieu avant ≥ rétroviseur
   const sideGap = Math.abs(attacker.d - defender.d);
-  const spaceOk = sideGap >= 1.9;                    // largeur laissée
+  /* espace dû RELATIF : en forêt/altitude l'écart 1,9 m est
+     géométriquement irréalisable (max 1,8 / 1,1 m) — tout contact y
+     était une faute automatique ; la place due est plafonnée par la
+     chaussée elle-même */
+  const hwDuel = Math.min(race.trk.wAt(attacker.s), race.trk.wAt(defender.s)) - 1.05;
+  const spaceOk = sideGap >= Math.min(1.9, hwDuel);
   const fault = !atApexOk || !spaceOk;
 
   if (fault) {
@@ -724,7 +741,11 @@ function resolvePairs(race: Race) {
     const latSep = Math.abs(front.d - back.d);
     const frontStopped = front.st === 'stop' || front.st === 'dry' || front.st === 'finish';
     if (frontStopped && latSep < 1.4) {
-      front.d = front.d >= back.d ? Math.min(back.d + 1.4, 2.2) : Math.max(back.d - 1.4, -2.2);
+      /* clamp RELATIF : la voiture garée doit rester SUR la chaussée
+         (90 % de la demi-largeur utilisable) — l'ancien clamp absolu
+         ±2,2 la plaçait hors route en altitude (hw 0,55) */
+      const lim = Math.max(0.3, 0.9 * (race.trk.wAt(front.s) - 1.05));
+      front.d = front.d >= back.d ? Math.min(back.d + 1.4, lim) : Math.max(back.d - 1.4, -lim);
       front.dSm = front.d;
     }
     if (!frontStopped && gap < CAR_L && latSep < 1.9) {
