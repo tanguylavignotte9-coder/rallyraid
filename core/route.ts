@@ -55,7 +55,112 @@ export type Chunk = {
    la hauteur porte le retour à la moyenne ; 4 nombres par chunk : on
    garde TOUT l'historique — c'est minuscule et c'est ce qui rend la
    régénération d'un chunk ancien possible sans tout reconstruire. */
-export type Bound = { x: number; y: number; hd: number; h: number };
+export type Bound = { x: number; y: number; hd: number; h: number; wpIdx: number; hdDev: number };
+
+/* ---- WAYPOINTS MACRO : l'ossature de l'itinéraire. Fonction PURE de
+   (seed, totalKm) — mêmes waypoints au bit près. Tronçons de 18-45 km,
+   cap jusqu'à ±120° (phases de retour arrière nettes), garde
+   anti-croisement géométrique sur TOUS les segments. ---- */
+const WP_D2R = Math.PI / 180;
+const wpWrap = (a: number) => {
+  while (a > Math.PI) a -= 2 * Math.PI;
+  while (a < -Math.PI) a += 2 * Math.PI;
+  return a;
+};
+export type Waypoint = { x: number; y: number; b: number };
+
+const WP_DMIN_OLD = 14000;    // marge vs segments anciens
+const WP_DMIN_RECENT = 12000; // marge vs les 2 segments précédents (retours tolérés)
+
+function segPointDist(p: { x: number; y: number }, a: Waypoint, c: Waypoint): number {
+  const dx = c.x - a.x, dy = c.y - a.y;
+  const L2 = dx * dx + dy * dy;
+  let t = L2 === 0 ? 0 : ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(a.x + dx * t - p.x, a.y + dy * t - p.y);
+}
+
+export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
+  const rand = mulberry32((seed ^ 0x77aa11) | 0);
+  const wps: Waypoint[] = [{ x: 0, y: 0, b: 0 }];
+  let x = 0, y = 0, bearing = 0;
+  let driven = 0, net = 0;
+  while (driven < totalKm * 1000 * 1.05) {   // 5% de couverture en plus
+    const Lw = 18000 + rand() * 27000;         // tronçon 18-45 km
+    let done = false;
+    for (let att = 0; att < 12 && !done; att++) {
+      const u = rand();
+      let db: number;
+      if (u < 0.45) db = (rand() < 0.5 ? -1 : 1) * (8 + rand() * 17) * WP_D2R;      // méandre
+      else if (u < 0.78) db = (rand() < 0.5 ? -1 : 1) * (25 + rand() * 25) * WP_D2R; // contournement
+      else db = (rand() < 0.5 ? -1 : 1) * (50 + rand() * 60) * WP_D2R;              // bascule majeure : RETOUR
+      db *= 1 - att * 0.08;                    // chaque échec resserre le tirage
+      let bNew = wpWrap(bearing * 0.45 + db);  // persistance partielle du serpent
+      /* garde de progression nette : retour arrière possible, retard
+         démesuré sur l'axe interdit (cible 58%) */
+      const behind = net + Lw * Math.cos(bNew) - (driven + Lw) * 0.58;
+      if (behind < -0.30 * Lw) bNew = wpWrap(bNew * 0.3);
+      if (Math.abs(bNew) > 120 * WP_D2R) bNew = Math.sign(bNew) * 120 * WP_D2R;
+      const nx = x + Lw * Math.cos(bNew), ny = y + Lw * Math.sin(bNew);
+      /* garde extrémité : TOUS les segments existants ; les deux plus
+         récents à marge réduite */
+      let ok = true;
+      for (let j = 0; j + 1 <= wps.length - 1 && ok; j++) {
+        const margin = j >= wps.length - 3 ? WP_DMIN_RECENT : WP_DMIN_OLD;
+        if (segPointDist({ x: nx, y: ny }, wps[j], wps[j + 1]) < margin) ok = false;
+      }
+      if (ok) {
+        const mx = x + 0.5 * (nx - x), my = y + 0.5 * (ny - y);
+        for (let j = 0; j + 1 <= wps.length - 2 && ok; j++) {
+          const margin = j === wps.length - 3 ? 6000 : WP_DMIN_OLD * 0.85;
+          if (segPointDist({ x: mx, y: my }, wps[j], wps[j + 1]) < margin) ok = false;
+        }
+      }
+      if (ok) { x = nx; y = ny; bearing = bNew; done = true; }
+      else if (att === 11) {
+        /* dégagement : balayage ±120° (préférence proche de l'axe),
+           on RETIENT LE PLUS DÉGAGÉ — jamais de tronçon fautif choisi
+           aveuglément. */
+        let bestB = 0, bestC = -1;
+        for (const d of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7,
+                         8, -8, 9, -9, 10, -10, 11, -11, 12, -12]) {
+          const cand = d * 10 * WP_D2R;
+          const cx = x + Lw * Math.cos(cand), cy = y + Lw * Math.sin(cand);
+          let cmin = Infinity;
+          for (let j = 0; j + 1 <= wps.length - 1; j++) {
+            const dd = segPointDist({ x: cx, y: cy }, wps[j], wps[j + 1]);
+            if (dd < cmin) cmin = dd;
+          }
+          if (cmin > bestC) { bestC = cmin; bestB = cand; }
+        }
+        bearing = bestB; x += Lw * Math.cos(bearing); y += Lw * Math.sin(bearing);
+        done = true;
+      }
+    }
+    wps.push({ x, y, b: bearing });
+    driven += Lw; net += Lw * Math.cos(bearing);
+  }
+  /* waypoint final extrapolé : la fin de course ne peut JAMAIS orbiter
+     autour du dernier sommet */
+  wps.push({ x: x + 120000 * Math.cos(bearing), y: y + 120000 * Math.sin(bearing), b: bearing });
+  return wps;
+}
+
+/* SINUOSITÉ : 1 point de contrôle / 6,4 km, interpolation cosinus.
+   Fonction PURE de (seed, index global) — ne consomme PAS de PRNG,
+   identique à la régénération d'un chunk ancien. Portions calmes
+   alternent avec des portions sinueuses : la route respire. */
+const sinuHash = (seed: number, j: number) => {
+  const v = Math.sin(j * 127.1 + seed * 0.618) * 43758.5453;
+  return v - Math.floor(v);
+};
+function sinuAt(seed: number, gi: number): number {
+  const per = 800; // 6,4 km
+  const j0 = Math.floor(gi / per);
+  const t = gi / per - j0;
+  const w = (1 - Math.cos(Math.PI * t)) / 2;
+  return sinuHash(seed, j0) * (1 - w) + sinuHash(seed, j0 + 1) * w;
+}
 export type PoiCursor = Record<PoiKind, number>; // prochain POI pend. par type
 
 export type Route = {
@@ -65,6 +170,7 @@ export type Route = {
   finishS: number;           // abscisse d'arrivée (m)
   nChunks: number;
   bound: Bound[];            // bound[k] = état d'entrée du chunk k
+  wps: Waypoint[];           // ossature macro (pure de seed+totalKm, jamais sérialisée)
   poiCur: PoiCursor[];       // poiCur[k] = curseurs POI à l'entrée du chunk k
   chunks: Map<number, Chunk>;
   order: number[];           // ordre d'insertion (éviction FIFO)
@@ -186,60 +292,72 @@ export function buildChunk(rt: Route, k: number): Chunk {
      clothoïde ; le cap se contrebalance dans le chunk (l'itinéraire
      chemine sans spiraler sur 20 000 km). ---- */
   let pi = 0;
-  let hdPlan = 0;
+  let hdDev = e.hdDev;   // wiggle cumulé GLOBAL (borne par la bande dir())
+  const WP_WIGGLE_MAX = 1.10;   // borne de magnitude du wiggle (bande ±0,40 + débord)
   const step = new Float64Array(RSAMP);
-  const dir = () => (hdPlan > 0.5 ? -1 : hdPlan < -0.5 ? 1 : rand() < 0.5 ? -1 : 1);
+  const dir = () => (hdDev > 0.40 ? -1 : hdDev < -0.40 ? 1 : rand() < 0.5 ? -1 : 1);
   const writeCorner = (cvT: number, len: number, sgn: number) => {
     const ramp = 4;
+    /* BORNE DE WIGGLE : la bande dir() agit sur le wiggle TOTAL — un
+       item isolé (angle jusqu'à ~1,7 rad) ne doit pas emporter hdDev
+       au-delà de la bande, sinon la dérive latérale explose l'enveloppe
+       macro. Troncature du virage, AUCUN tirage PRNG modifié. */
     for (let q = 0; q < len && pi < RSAMP; q++, pi++) {
       const u = Math.min(1, (q + 1) / ramp, (len - q) / ramp);
-      step[pi] = sgn * cvT * SEG * u;
-      hdPlan += step[pi];
+      const d = sgn * cvT * SEG * u;
+      if (Math.abs(hdDev + d) > WP_WIGGLE_MAX && hdDev * sgn > 0) break;
+      step[pi] = d;
+      hdDev += d;
     }
   };
   const writeStraight = (len: number) => {
     for (let q = 0; q < len && pi < RSAMP; q++, pi++) step[pi] = 0;
   };
+  /* COURANT : virage intermédiaire VISIBLE AU ZOOM (26-46° sur 0,5-1,2 km,
+     sagitta 100-400 m), longueur bornée pour ne pas vider le budget micro */
+  const writeCourant = (z: number) => {
+    const turn = 0.45 + rand() * 0.35;
+    const R = z === 0 ? 700 + rand() * 800
+          : z === 1 ? 400 + rand() * 350
+          : z === 2 ? 1200 + rand() * 1400
+          : 350 + rand() * 300;
+    const len = Math.max(60, Math.min(150, Math.round(turn * R / SEG)));
+    writeCorner(1 / R, len, dir());
+  };
   while (pi < RSAMP - 30) {
-    const zone = biomeBlendR(rt, k * RSAMP + Math.min(pi, RSAMP - 1)).a;
+    const z = biomeBlendR(rt, k * RSAMP + Math.min(pi, RSAMP - 1)).a;
+    const sinu = sinuAt(rt.seed, k * RSAMP + pi);
     const u = rand();
+    /* courant : tirage SÉPARÉ, fréquence modulée par la sinuosité —
+       les épingles du menu ne sont jamais remplacées */
+    const pCur = z === 2 ? 0.05 + 0.22 * sinu
+               : z === 0 ? 0.05 + 0.22 * sinu
+               : 0.04 + 0.16 * sinu;
+    const uCur = rand();
+    if (uCur < pCur) { writeCourant(z); continue; }
     let kind: string;
-    /* MENUS par biome — le CARACTÈRE du tracé (design 2026-10-14) :
-       plaine : fluide (grands courants, peu d'épingles) ;
-       forêt : serré et « aveugle » — davantage de PETITS que de grands ;
-       désert : LONGUES DROITES (jusqu'à ~0,5 km) ;
-       altitude : lacets — épingles et S en grande courbure dominants. */
-    if (zone === 0) kind = u < 0.42 ? 'droite' : u < 0.86 ? 'grand' : 's';
-    else if (zone === 1) kind = u < 0.10 ? 'droite' : u < 0.62 ? 'petit' : u < 0.88 ? 's' : 'epingle';
-    else if (zone === 2) kind = u < 0.55 ? 'droite' : u < 0.92 ? 'grand' : 'petit';
+    /* MENUS par biome — V2ter, avec droites resserrées plaine/désert
+       pour compenser la longueur mangée par les courants */
+    if (z === 0) kind = u < 0.20 ? 'droite' : u < 0.62 ? 'grand' : u < 0.84 ? 's' : 'angle';
+    else if (z === 1) kind = u < 0.08 ? 'droite' : u < 0.44 ? 'petit' : u < 0.72 ? 's' : u < 0.90 ? 'angle' : 'epingle';
+    else if (z === 2) kind = u < 0.42 ? 'droite' : u < 0.82 ? 'grand' : 'angle';
     else kind = u < 0.06 ? 'droite' : u < 0.30 ? 'petit' : u < 0.70 ? 's' : 'epingle';
     if (kind === 'droite') {
-      /* désert : la dune creuse la pointe — droites de 208 à 496 m */
-      writeStraight(zone === 2 ? 26 + Math.floor(rand() * 36) : 10 + Math.floor(rand() * 20));
-    } else if (kind === 'grand') {
-      writeCorner(1 / (280 + rand() * 280), 12 + Math.floor(rand() * 18), dir());
-    } else if (kind === 'petit') {
-      /* forêt : serré ; altitude : pierre — même courbure, plus vif */
-      writeCorner(1 / (zone === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
-    } else if (kind === 's') {
-      const cvS = 1 / (zone === 3 ? 90 + rand() * 70 : 150 + rand() * 130);
-      const lS = 7 + Math.floor(rand() * 8);
-      const sgn = dir();
-      writeCorner(cvS, lS, sgn);
-      writeCorner(cvS, lS, -sgn);
-    } else {
-      /* LACETS d'altitude : épingle franche (R 30-60 m), plus longue en
-         altitude pour dessiner le lacet du col */
-      writeCorner(1 / (30 + rand() * 30), zone === 3 ? 8 + Math.floor(rand() * 10) : 6 + Math.floor(rand() * 8), dir());
+      /* portion calme → lignes plus LONGUES (×1 à ×1,6) */
+      const long = Math.round((z === 2 ? 26 + Math.floor(rand() * 36)
+                                       : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
+      writeStraight(long);
     }
+    else if (kind === 'grand') writeCorner(1 / (280 + rand() * 280), 12 + Math.floor(rand() * 18), dir());
+    else if (kind === 'petit') writeCorner(1 / (z === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
+    else if (kind === 's') {
+      const cvS = 1 / (z === 3 ? 90 + rand() * 70 : 150 + rand() * 130);
+      const lS = 7 + Math.floor(rand() * 8);
+      const sgn = dir(); writeCorner(cvS, lS, sgn); writeCorner(cvS, lS, -sgn);
+    } else if (kind === 'angle') writeCorner(1 / (90 + rand() * 90), 14 + Math.floor(rand() * 12), dir());
+    else writeCorner(1 / (30 + rand() * 30), z === 3 ? 8 + Math.floor(rand() * 10) : 6 + Math.floor(rand() * 8), dir());
   }
   writeStraight(RSAMP - pi);
-  /* refermer le CAP sur le chunk : le contrebalancement garde le résidu
-     petit, la détendance l'annule sans déformer des virages entiers */
-  let hdAcc = 0;
-  for (let i = 0; i < RSAMP; i++) hdAcc += step[i];
-  const hdCorr = -hdAcc / RSAMP;
-  for (let i = 0; i < RSAMP; i++) step[i] += hdCorr;
 
   /* ---- géométrie : cap, plan, altitude (bruit lissé + retour doux
      à la moyenne : des collines vivantes, sans dérive sur 20 000 km) ---- */
@@ -275,13 +393,46 @@ export function buildChunk(rt: Route, k: number): Chunk {
     }
     incS[i] = a3 / n;
   }
+  const wps = rt.wps;
+  const KH = 0.12, CMAX = 0.008;   // gain de poursuite / virage max par pas (R ≈ 1 km)
+  let wpIdx = e.wpIdx;
+  /* la phase de plan a accumulé le wiggle PRÉVISIONNEL du chunk (bande
+     dir()) ; l'intégration repart de l'état d'ENTRÉE et le re-accumule
+     échantillon par échantillon — pas de double comptage */
+  hdDev = e.hdDev;
   for (let i = 0; i < RSAMP; i++) {
+    /* ---- avancement du waypoint cible : 3 tests, du proche au géométrique.
+       NE PAS « simplifier » en un seul test dot<0 : le test dot<0 nu
+       déclenche jusqu'à 26 km AVANT les sommets serrés et fait couper le
+       coin à 11 km de la polyline (mesuré) — bug historique. */
+    while (wpIdx < wps.length - 1) {
+      const cur = wps[wpIdx], nxt = wps[wpIdx + 1];
+      const px = e.x + xs[i], py = e.y + zs[i];
+      const dcx = cur.x - px, dcy = cur.y - py;
+      const d2 = dcx * dcx + dcy * dcy;
+      let adv = d2 < 5000 * 5000;                                   // 1. dist < 5 km
+      if (!adv && wpIdx > 0 && d2 < 25000 * 25000) {                 // 2. plan du sommet franchi
+        const inx = cur.x - wps[wpIdx - 1].x, iny = cur.y - wps[wpIdx - 1].y;
+        if ((px - cur.x) * inx + (py - cur.y) * iny > 0) adv = true;
+      }
+      if (!adv && d2 < 8000 * 8000 &&
+          (nxt.x - px) * dcx + (nxt.y - py) * dcy < 0) adv = true;   // 3. repli borné
+      if (adv) wpIdx++; else break;
+    }
+    const tw = wps[wpIdx];
+    const hdT = Math.atan2(tw.y - (e.y + zs[i]), tw.x - (e.x + xs[i]));
+    /* DÉ-COUPLAGE : la correction voit le cap MACRO (hd - hdDev), PAS le
+       cap total — le wiggle ondole librement autour de l'axe macro sans
+       être écrasé par le tracker (mesuré : bruit local +40 %). */
+    let corr = wpWrap(hdT - (hd[i] - hdDev)) * KH;
+    if (corr > CMAX) corr = CMAX; else if (corr < -CMAX) corr = -CMAX;
     if (i + 1 < RSAMP) {
-      hd[i + 1] = hd[i] + step[i];
+      hd[i + 1] = hd[i] + step[i] + corr;
       xs[i + 1] = xs[i] + Math.cos(hd[i]) * SEG;
       zs[i + 1] = zs[i] + Math.sin(hd[i]) * SEG;
       h[i + 1] = h[i] + incS[i] - h[i] * H_PULL;
     }
+    hdDev += step[i];
   }
 
   /* ---- POI : le curseur global de chaque type avance dans le chunk ---- */
@@ -306,6 +457,8 @@ export function buildChunk(rt: Route, k: number): Chunk {
     y: e.y + zs[RSAMP - 1],
     hd: hd[RSAMP - 1],
     h: h[RSAMP - 1],
+    wpIdx,
+    hdDev,
   };
   rt.poiCur[k + 1] = cursor;
 
@@ -377,7 +530,8 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     totalKm,
     finishS: totalKm * 1000,
     nChunks,
-    bound: [{ x: 0, y: 0, hd: 0, h: 0 }],
+    bound: [{ x: 0, y: 0, hd: 0, h: 0, wpIdx: 0, hdDev: 0 }],
+    wps: buildWaypoints(seed, totalKm),
     poiDensity,
     poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],
     chunks: new Map(),
