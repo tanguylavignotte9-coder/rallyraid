@@ -43,7 +43,12 @@ async function api(path, opts) {
    Pas de seconde boucle de données : setData alimente 3D + dash ;
    pollCb reste pour la CB.
    ============================================================ */
+let pollBusy = false;
+let lastSlow = 0;
+
 async function poll() {
+  if (pollBusy) return;          /* jamais deux /api/state en vol */
+  pollBusy = true;
   try {
     let url = '/api/state';
     if (selCarId !== null) url += `?viewCar=${selCarId}`;
@@ -54,17 +59,25 @@ async function poll() {
     snap = d;
     snapAt = performance.now();   /* pour l'extrapolation de la mini-carte */
     $('conn').textContent = 'connecté'; $('conn').className = 'on';
-    await fetchRoutePts();
-    /* 3D : la voiture suivie est ma voiture (ou celle du sélecteur super) */
-    if (world3dReady && snap.cars?.length) {
-      W.setData(snap);
-      W.refreshWorldNow();
+    /* 3D à 15 Hz — LE but du changement : cibles fraîches à chaque tick,
+       AVANT tout await (l'ancien ordre attendait fetchRoutePts) */
+    if (world3dReady && snap.cars?.length) W.setData(snap);
+    /* LEADER LENT (classement, journal, plan, tracé, fenêtre monde) : 2 Hz.
+       render() reconstruit le tableau du classement en innerHTML — le
+       lancer 15×/s est du gaspillage DOM ; la 3D n'en a pas besoin.
+       draw() de la mini-carte sort aussi d'ici : la boucle rAF animMap
+       la fait déjà tourner à chaque frame. */
+    if (performance.now() - lastSlow > 500) {
+      lastSlow = performance.now();
+      await fetchRoutePts();
+      if (world3dReady) W.refreshWorldNow();
+      render();
+      dashTick(1);
     }
-    render();
-    dashTick(1);
-    draw();
   } catch {
     $('conn').textContent = 'déconnecté'; $('conn').className = 'off';
+  } finally {
+    pollBusy = false;
   }
 }
 
@@ -875,7 +888,7 @@ $('logoutBtn').onclick = async () => {
     world3dReady = true;
   } catch (e) { /* CDN three indisponible : cockpit sans 3D */ }
   resize();
-  setInterval(poll, 1000);
+  setInterval(poll, 67);   /* ~15 Hz : le flux positions n'est plus arbitrairement à 1 s */
   setInterval(pollCb, 2000);
   poll();
   if (copOpen) copToggle(true);

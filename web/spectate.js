@@ -21,7 +21,11 @@ async function api(path) {
   return r;
 }
 
+let pollBusy = false;
+
 async function poll() {
+  if (pollBusy) return;
+  pollBusy = true;
   try {
     const r = await api('/api/state');
     if (!r) return;
@@ -40,7 +44,9 @@ async function poll() {
         if (!old.some((o) => o.t === e.t && o.msg === e.msg)) flash(e.msg);
       }
     }
-  } catch { /* silence — le prochain tick réessaie */ }
+  } catch { /* silence — le prochain tick réessaie */ } finally {
+    pollBusy = false;
+  }
 }
 
 function flash(msg) {
@@ -87,6 +93,6 @@ $('fsBtn').onclick = () => {
   }
   await poll();
   await W.refreshWorldNow();
-  setInterval(poll, 1000);
+  setInterval(poll, 67);   /* ~15 Hz, même flux que le stratège */
   setInterval(() => W.refreshWorldNow(), 3000);
 })();

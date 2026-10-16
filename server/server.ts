@@ -381,7 +381,7 @@ const server = http.createServer(async (req, res) => {
         viewCar = race.cars.find((c) => c.id === id) ?? me;
       }
       if (viewCar) { sendJSON(res, 200, buildMe(viewCar)); return; }
-      sendJSON(res, 200, snapshot);
+      sendJSON(res, 200, buildSnapshot());   /* frais à chaque requête : le cache était périmé 14 fois sur 15 à cadence client 15 Hz */
       return;
     }
 
