@@ -113,6 +113,7 @@ Le dépôt est pensé pour être vérifié sans toucher au code :
 | **4 — Interface** | Client web PC/mobile : carte, classement, jauges, journal, éditeur de plan | ✅ |
 | **5a — Comptes & admin** | Sessions scrypt, page admin (comptes, reset complet), interface une-voiture | ✅ cette version |
 | **5 — Compétition** | Course multi-jouieurs de plusieurs jours, doublages/rétablissements | ⬜ |
+| **Décor : profondeur** | Couture route/terrain, mi-lointain (L1), horizon (reliefs + skyline), villages, eau | ✅ |
 
 ## Décisions fondatrices
 

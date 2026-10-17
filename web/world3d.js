@@ -62,6 +62,35 @@ let orbitT = 0;
 const camPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 let poiLights = [];
+/* ---- décor n°22 : état des couches L1/L2, gorge, eau, skyline ---- */
+let winS0 = 0;                 // abscisse du 1er point de la fenêtre (hash stable)
+let gorge = null;              // profondeur de ravin par point (0 hors ponts)
+let skyGroup = null, skyMat = null;
+let waterMat = null;            // matériau d'eau PARTAGÉ rivières + lacs
+let villageLights = [];         // Points lumineux des villages (nuit)
+let decoRidges = [];            // dégradation fps : reliefs
+let villageGroups = [];         // dégradation fps : villages lointains
+let degraStage = 0;             // 0 rien, 1 skyline, 2 reliefs, 3 villages
+
+/* HASH PUR de position : stable au rebuild de la fenêtre (decorRand,
+   lui, est RESEMÉ à chaque reconstruction — tout REPÈRE (village, lac,
+   relief, ravin) passe par ici, jamais par decorRand). */
+function posHash(a, b) {
+  const x = Math.sin(a * 127.1 + b * 311.7 + (snap?.seed ?? 42) * 0.618) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+/* ondulation macro du mi-lointain (L1) : PURE de (index, anneau, seed) */
+function macroNoise(i, k, seed) {
+  return Math.sin(i * 0.11 + k * 1.7 + seed * 0.01) * Math.cos(k * 0.83 - i * 0.047);
+}
+
+/* rampe de terrain : le bruit prend de l'amplitude en s'éloignant */
+function terrainRamp(j) { return Math.min(1, j / 12); }
+
+/* brouillard par biome : plaine, forêt (brume serrée), désert (air sec),
+   altitude */
+const BIOME_FOG_RANGE = [[300, 2400], [120, 1400], [200, 3000], [150, 1800]];
 
 /* Récupère la voiture publique suivie (ou snap.me si c'est la mienne). */
 function followCar() {
@@ -166,11 +195,19 @@ async function refreshWorld() {
        si le fetch échoue, l'ancien monde reste en place) */
     const group = new THREE.Group();
     poiLights = [];
+    villageLights = [];
     decorRand = mulberry32(snap.seed ?? 42);
+    winS0 = s0;
+    gorge = computeGorge(d.pts);   // AVANT terrain/props : une seule formule
     buildRoad(group, d);
     buildTerrain(group, d);
+    buildMidFar(group, d);
+    buildRidges(group, d);
+    buildVillages(group, d);
+    buildWater(group, d);
     buildProps(group, d);
     buildPois(group, d.pois ?? []);
+    buildSkyline();                // UNE FOIS — vit hors du groupe fenêtre
     scene.add(group);
     if (world) {
       scene.remove(world.group);
@@ -180,6 +217,7 @@ async function refreshWorld() {
       });
     }
     world = { group, pts: d.pts, s0, step: STEP };
+    degraStage = 0;        /* nouvelle fenêtre : décor complet */
     winCenter = center;   /* seulement après succès : un échec laisse
                              l'ancien centre → retry au poll suivant */
   } finally {
@@ -200,7 +238,9 @@ function buildRoad(group, d) {
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
     const w = p.w;
     const halfRoad = w;
-    const halfDirt = w + 1.6;
+    /* jupe terre qui RECOUVRE la 1re rangée du terrain (w + 2) :
+       recouvrement de 0,5 m — plus jamais de fissure visible */
+    const halfDirt = w + 2.5;
     pos.push(p.x + nx * -halfDirt, p.z + 0.02, p.y + nz * -halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
     pos.push(p.x + nx * -halfRoad, p.z + 0.05, p.y + nz * -halfRoad);
@@ -284,9 +324,48 @@ function buildSegments(group, pts, segVal, makeMesh) {
    mur qui enterre le bas-côté ni de vide sous la route. */
 function terrainY(p, i, dist) {
   const j = Math.max(0, (dist - (p.w + 2)) / STEP);
-  const ramp = Math.min(1, j / 8);
+  const ramp = terrainRamp(j);
   const noise = Math.sin(i * 0.31 + j * 0.17) * Math.cos(j * 0.09 + i * 0.13);
-  return p.z - 0.3 - Math.max(0, j - 1) * 0.35 + noise * ramp * (4 + j * 1.4);
+  let y = p.z - 0.05 + noise * ramp * (3 + j * 1.1);
+  /* RAVIN sous les ponts : s'ouvre LARGEMENT en s'écartant de la
+     chaussée (la chaussée reste sur son tablier) ; gorge est lissé le
+     long de la route → rampe naturelle en amont/aval, stable au
+     rebuild (hash pur). UNE SEULE formule : les props suivent. */
+  if (gorge && gorge[i] > 0) {
+    y -= gorge[i] * Math.min(1, Math.max(0, (dist - (p.w + 6)) / 45));
+  }
+  return y;
+}
+
+/* précalcul du ravin de la fenêtre : cible 25-55 m sur les runs seg=1
+   (ponts), 0 partout ailleurs, puis 3 passes de box blur sur ±20
+   points (bords clampés) → transitions douces et stables. */
+function computeGorge(pts) {
+  const n = pts.length;
+  const target = new Float64Array(n);
+  let i = 0;
+  while (i < n) {
+    if (pts[i].seg === 1) {
+      const runStart = i;
+      while (i < n && pts[i].seg === 1) i++;
+      const depth = 25 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 3) * 30;
+      for (let q = runStart; q < i; q++) target[q] = depth;
+    } else i++;
+  }
+  let cur = target;
+  for (let pass = 0; pass < 3; pass++) {
+    const out = new Float64Array(n);
+    for (let q = 0; q < n; q++) {
+      let acc = 0, cnt = 0;
+      for (let d = -20; d <= 20; d++) {
+        const j = Math.min(n - 1, Math.max(0, q + d));
+        acc += cur[j]; cnt++;
+      }
+      out[q] = acc / cnt;
+    }
+    cur = out;
+  }
+  return cur;
 }
 
 /* ---- terrain : manteau low-poly ~400 m de chaque côté ---- */
@@ -304,7 +383,7 @@ function buildTerrain(group, d) {
         const dist = p.w + 2 + j * STEP;
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
-        const y = terrainY(p, i, dist) + decorRand() * 0.8;
+        const y = terrainY(p, i, dist) + decorRand() * 0.8 * terrainRamp(j);
         pos.push(x, y, zz);
         const c2 = base.clone();
         if (y > SNOW_ALT) c2.lerp(new THREE.Color('#eef2f5'), Math.min(1, (y - SNOW_ALT) / 80));
@@ -330,6 +409,366 @@ function buildTerrain(group, d) {
   const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
   mesh.receiveShadow = shadowsOn;
   group.add(mesh);
+}
+
+/* ============================================================
+   n°22 — BANDE MI-LOINTAINE L1 (400 m → 1,8 km)
+   1 point route sur 4 (64 m) ; anneaux latéraux à d_k = 400·1.22^k ;
+   l'anneau 0 = terrainY(p, i, 400) EXACT → couture parfaite avec la
+   rangée externe du L0 (même formule). Ondulation macro par biome.
+   ============================================================ */
+function buildMidFar(group, d) {
+  const pts = d.pts;
+  const seed = snap?.seed ?? 42;
+  const pos = [], col = [], idx = [];
+  const RINGS = [];
+  for (let k = 0; ; k++) {
+    const dd = 400 * Math.pow(1.22, k);
+    if (dd > 1800) break;
+    RINGS.push(dd);
+  }
+  if (!RINGS.length) return;
+  const SAMPL = 4;                       // 1 point sur 4 (64 m)
+  let vcount = 0;
+  const cellSide = 220 / (STEP * SAMPL); // parcelle agricole ~220 m
+  const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
+  const HEDGE = new THREE.Color('#3f5a35');
+  const biomeCol = new THREE.Color();
+  const snow = new THREE.Color('#eef2f5');
+  const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
+  for (let side = -1; side <= 1; side += 2) {
+    const baseIdx = vcount;
+    for (let i = 0; i < pts.length; i += SAMPL) {
+      const p = pts[i];
+      const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+      for (let k = 0; k < RINGS.length; k++) {
+        const dist = RINGS[k];
+        const x = p.x + nx * side * dist;
+        const zz = p.y + nz * side * dist;
+        const y = terrainY(p, i, dist) + macroNoise(i, k, seed) * macroAmp(p.biome, k);
+        let c;
+        if (p.biome === 0) {
+          /* PATCHWORK AGRICOLE : parcelles ~220 m, haies aux frontières */
+          const cell = Math.floor((i / SAMPL) / cellSide);
+          const inCell = ((i / SAMPL) / cellSide) - cell;
+          const edge = inCell < 0.04 || inCell > 0.96;
+          if (edge) c = HEDGE;
+          else {
+            const h4 = posHash(cell + 1000 * side, 5);
+            c = PATCH[Math.floor(h4 * 4) % 4];
+          }
+        } else {
+          biomeCol.set(BIOME_GROUND[p.biome] ?? '#7a8a5a');
+          if (p.biome === 1) biomeCol.offsetHSL(0, 0, (posHash(i, k) - 0.5) * 0.04);
+          if (p.biome === 2) biomeCol.offsetHSL(0, 0, (posHash(i, k + 50) - 0.5) * 0.05);
+          if (y > SNOW_ALT) biomeCol.lerp(snow, Math.min(1, (y - SNOW_ALT) / 80));
+          c = biomeCol;
+        }
+        push(x, y, zz, c);
+        vcount++;
+      }
+    }
+    /* index : quads entre rangées successives (et L0 raccordé par
+       l'anneau 0 qui RECOPIE la formule du bord externe du L0) */
+    const colsN = RINGS.length;
+    const rows = Math.floor(pts.length / SAMPL);
+    for (let r = 0; r + 1 < rows; r++) {
+      const a = baseIdx + r * colsN, b = a + colsN;
+      for (let k = 0; k + 1 < colsN; k++) {
+        if (side === -1) idx.push(a + k, b + k, a + k + 1, a + k + 1, b + k, b + k + 1);
+        else idx.push(a + k, a + k + 1, b + k, a + k + 1, b + k + 1, b + k);
+      }
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  mesh.receiveShadow = shadowsOn;
+  mesh.frustumCulled = false;
+  group.add(mesh);
+}
+
+/* amplitude macro de la bande L1 par biome — les CONTREFORTS
+   d'altitude se REFERMENT vers l'extérieur (la vallée s'enferme) */
+function macroAmp(biome, k) {
+  const t = k / 9;   // 0 (proche) → 1 (loin)
+  if (biome === 0) return 4 + t * 8;            // plaine quasi plate
+  if (biome === 1) return 8 + t * 12;           // forêt
+  if (biome === 2) return 15 + t * 20;          // dunes
+  return 20 + t * 40;                           // altitude : contreforts
+}
+
+/* ============================================================
+   n°22 — RELIEFS L2 LOW-POLY DANS LA BRUME (1,2-2,2 km)
+   Par fenêtre, 3-8 masses positionnées par HASH PUR — silhouettes
+   mangées à moitié par le brouillard = profondeur gratuite.
+   ============================================================ */
+function buildRidges(group, d) {
+  const pts = d.pts;
+  const seed = snap?.seed ?? 42;
+  const nMass = 3 + Math.floor(posHash(Math.floor(winS0 / 1000), 11) * 6);
+  decoRidges = [];
+  for (let m = 0; m < nMass; m++) {
+    const h1 = posHash(Math.floor(winS0 / 1000), 21 + m);
+    const h2 = posHash(Math.floor(winS0 / 1000) + m, 23);
+    const h3 = posHash(m, Math.floor(winS0 / 1000));
+    const sIdx = Math.floor(h1 * pts.length);
+    const p = pts[Math.min(pts.length - 1, sIdx)];
+    const side = h2 < 0.5 ? -1 : 1;
+    const dist = 1200 + h3 * 1000;
+    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+    const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
+    const hArr = [60, 150, 100, 250, 80, 250, 300, 700];   // par biome
+    const amp = hArr[p.biome] ?? 100;
+    const H = amp * (0.5 + h2 * 0.5);
+    const W = 250 + h3 * 450;
+    /* crête en dents de scie : ligne de base + sommets */
+    const pos = [], idx = [];
+    const TEETH = 5 + Math.floor(h1 * 4);
+    const dirX = Math.cos(p.hd + Math.PI / 2), dirZ = Math.sin(p.hd + Math.PI / 2);
+    let vi = 0;
+    const baseY = (p.biome === 3 && p.z > 200) ? p.z - 40 : p.z - 10;
+    const snow = new THREE.Color('#eef2f5');
+    const c = new THREE.Color(BIOME_GROUND[p.biome] ?? '#7a8a5a');
+    c.multiplyScalar(0.55);   // teinte ASSOMBRIE : lisibilité en silhouette
+    if (p.biome === 3 && baseY + H > SNOW_ALT) c.lerp(snow, Math.min(1, (baseY + H - SNOW_ALT) / 120));
+    const cols = [];
+    for (let t = 0; t <= TEETH; t++) {
+      const u = t / TEETH;
+      const bx = cx + dirX * (u - 0.5) * W * 2;
+      const bz = cz + dirZ * (u - 0.5) * W * 2;
+      pos.push(bx, baseY, bz); cols.push(c.r, c.g, c.b);
+      const peakH = baseY + H * (0.6 + 0.4 * posHash(m * 10 + t, 31));
+      if (p.biome === 2) {
+        /* MESA tabulaire : plateau plat + flancs raides */
+        const topH = baseY + H * 0.85;
+        pos.push(bx + dirX * 8, topH, bz + dirZ * 8); cols.push(c.r, c.g, c.b);
+        pos.push(bx - dirX * 8, topH, bz - dirZ * 8); cols.push(c.r, c.g, c.b);
+      } else {
+        pos.push(bx, peakH, bz); cols.push(c.r, c.g, c.b);
+      }
+      vi += p.biome === 2 ? 3 : 2;
+    }
+    const step = p.biome === 2 ? 3 : 2;
+    for (let t = 0; t < TEETH; t++) {
+      const a = t * step, b = (t + 1) * step;
+      if (p.biome === 2) {
+        idx.push(a, a + 2, b, a + 2, b + 2, b);
+        idx.push(a + 1, a + 2, b + 1, a + 2, b + 2, b + 1);
+        idx.push(a + 2, b + 2, b, b + 1, b, b + 2);
+      } else {
+        idx.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    group.add(mesh);
+    decoRidges.push(mesh);
+  }
+}
+
+/* ============================================================
+   n°22 — VILLAGES (plaine) + FERMES ISOLÉES
+   REPÈRES placés par HASH PUR de cellule (500 m d'arc) : reconstruits
+   À L'IDENTIQUE au rebuild de la fenêtre. Chaque maison est posée à
+   terrainY + macroNoise du L1 à sa position.
+   ============================================================ */
+function buildVillages(group, d) {
+  const pts = d.pts;
+  const seed = snap?.seed ?? 42;
+  villageLights = [];
+  villageGroups = [];
+  const wallGeo = new THREE.BoxGeometry(6, 4, 5);
+  const roofGeo = new THREE.CylinderGeometry(0, 4.2, 2.4, 4);   // prisme 45°
+  roofGeo.rotateY(Math.PI / 4);
+  const WALLS = ['#d8d2c0', '#c9a98a', '#b7c4b5'].map((c) => new THREE.MeshLambertMaterial({ color: c }));
+  const ROOFS = ['#8a4a3a', '#6a5a4a'].map((c) => new THREE.MeshLambertMaterial({ color: c }));
+  const walls = [], roofs = [];
+  const churchGeo = new THREE.CylinderGeometry(0, 2.2, 18, 4);
+  const churches = [];
+  const pushHouse = (x, y, z, rot) => {
+    walls.push([x, y, z, rot]);
+    roofs.push([x, y, z, rot]);
+  };
+  for (let cell = Math.floor(winS0 / 500); cell <= Math.floor((winS0 + pts.length * STEP) / 500); cell++) {
+    /* position route du centre de cellule */
+    const sCell = cell * 500 - winS0;
+    const i = Math.round(sCell / STEP);
+    if (i < 2 || i >= pts.length - 2) continue;
+    const p = pts[i];
+    if (p.biome !== 0) continue;                    // plaine SEULEMENT
+    const isVillage = posHash(cell, 7) < 0.022;
+    const isFarm = !isVillage && posHash(cell, 9) < 0.008;
+    if (!isVillage && !isFarm) continue;
+    const side = posHash(cell, 8) < 0.5 ? -1 : 1;
+    const dist = isVillage ? 350 + posHash(cell, 10) * 850 : 250 + posHash(cell, 10) * 300;
+    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+    const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
+    const l1y = terrainY(p, i, dist) + macroNoise(i, Math.round(dist / 400), seed) * macroAmp(0, Math.min(9, Math.round(dist / 200)));
+    const nHouse = isVillage ? 6 + Math.floor(posHash(cell, 12) * 13) : 2;
+    const radius = isVillage ? 40 + posHash(cell, 13) * 80 : 12;
+    for (let h = 0; h < nHouse; h++) {
+      const ang = (h / nHouse) * Math.PI * 2 + posHash(cell * 10 + h, 14) * 0.5;
+      const rr = radius * (0.55 + posHash(cell * 10 + h, 15) * 0.7);
+      const hx = cx + Math.cos(ang) * rr, hz = cz + Math.sin(ang) * rr;
+      const rot = p.hd + (posHash(cell * 10 + h, 16) - 0.5) * 0.9;
+      pushHouse(hx, l1y, hz, rot);
+    }
+    /* clocher sur ~1 village sur 2 */
+    if (isVillage && posHash(cell, 17) < 0.5) churches.push([cx, l1y, cz, p.hd]);
+    /* NUIT : points lumineux chauds — allumés avec les POI */
+    if (isVillage) {
+      const nL = 4 + Math.floor(posHash(cell, 18) * 6);
+      for (let l = 0; l < nL; l++) {
+        const ang = posHash(cell * 10 + l, 19) * Math.PI * 2;
+        const rr = radius * posHash(cell * 10 + l, 20);
+        const g = new THREE.Points(
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(cx + Math.cos(ang) * rr, l1y + 3, cz + Math.sin(ang) * rr)]),
+          new THREE.PointsMaterial({ color: 0xffd9a0, size: 3, transparent: true, opacity: 0 }));
+        group.add(g);
+        villageLights.push(g);
+      }
+    }
+  }
+  const place = (geo, mats, arr, yOff) => {
+    if (!arr.length) return;
+    const mat = mats[0];
+    const im = new THREE.InstancedMesh(geo, mat, arr.length);
+    const m = new THREE.Matrix4();
+    arr.forEach(([x, y, z, rot], i2) => {
+      m.makeRotationY(Math.PI / 2 - rot);
+      m.setPosition(x, y + yOff, z);
+      im.setMatrixAt(i2, m);
+    });
+    im.castShadow = shadowsOn;
+    group.add(im);
+    villageGroups.push(im);
+  };
+  place(wallGeo, WALLS, walls, 2);
+  place(roofGeo, ROOFS, roofs, 5.2);
+  place(churchGeo, ROOFS, churches, 9);
+}
+
+/* ============================================================
+   n°22 — EAU : rivières sous les ponts + lacs dans les creux
+   Matériau PARTAGÉ (suit la palette nuit comme le reste).
+   ============================================================ */
+function getWaterMat() {
+  if (!waterMat) waterMat = new THREE.MeshLambertMaterial({ color: 0x4a7a9a });
+  return waterMat;
+}
+
+function buildWater(group, d) {
+  const pts = d.pts;
+  const seed = snap?.seed ?? 42;
+  const water = getWaterMat();
+  /* RIVIÈRES : ruban au fond du ravin sur chaque run seg=1 (± 120 m) */
+  let i = 0;
+  while (i < pts.length) {
+    if (pts[i].seg === 1) {
+      const runStart = Math.max(0, i - Math.round(120 / STEP));
+      while (i < pts.length && pts[i].seg === 1) i++;
+      const runEnd = Math.min(pts.length - 1, i + Math.round(120 / STEP));
+      const width = 10 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 3) * 14;
+      const phase = posHash(Math.floor((winS0 + runStart * STEP) / 100), 4) * Math.PI * 2;
+      const amp = 15 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 5) * 25;
+      const pos = [], idx = [];
+      let vi = 0;
+      for (let q = runStart; q <= runEnd; q++) {
+        const p = pts[q];
+        const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+        const meander = Math.sin((q - runStart) * 0.08 + phase) * amp;
+        const y = p.z - (gorge ? gorge[q] : 0) + 2;
+        pos.push(p.x + nx * (meander - width / 2), y, p.y + nz * (meander - width / 2));
+        pos.push(p.x + nx * (meander + width / 2), y, p.y + nz * (meander + width / 2));
+        if (q < runEnd) { idx.push(vi, vi + 1, vi + 2, vi + 1, vi + 3, vi + 2); }
+        vi += 2;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setIndex(idx);
+      geo.computeVertexNormals();
+      group.add(new THREE.Mesh(geo, water));
+    } else i++;
+  }
+  /* LACS : cellules de 2 000 m, plaine/forêt, disque irrégulier posé
+     au point BAS local de la bande L1 (min de macroNoise voisin) */
+  for (let cell = Math.floor(winS0 / 2000); cell <= Math.floor((winS0 + pts.length * STEP) / 2000); cell++) {
+    if (posHash(cell, 13) >= 0.045) continue;
+    const sCell = cell * 2000 - winS0;
+    const i = Math.round(sCell / STEP);
+    if (i < 2 || i >= pts.length - 2) continue;
+    const p = pts[i];
+    if (p.biome !== 0 && p.biome !== 1) continue;
+    const side = posHash(cell, 22) < 0.5 ? -1 : 1;
+    const dist = 500 + posHash(cell, 24) * 1000;
+    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+    const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
+    /* point bas local : min de macroNoise échantillonné autour */
+    let yMin = Infinity;
+    for (let q = -4; q <= 4; q++) {
+      for (let k = 0; k < 10; k++) {
+        const y = terrainY(p, i, dist) + macroNoise(i + q, k, seed) * macroAmp(p.biome, k);
+        if (y < yMin) yMin = y;
+      }
+    }
+    const nVert = 12 + Math.floor(posHash(cell, 25) * 9);
+    const R = 60 + posHash(cell, 26) * 160;
+    const pos = [cx, yMin + 1.5, cz];
+    const idx = [];
+    for (let v = 1; v <= nVert; v++) {
+      const ang = (v / nVert) * Math.PI * 2;
+      const rr = R * (0.7 + posHash(cell * 10 + v, 27) * 0.5);
+      pos.push(cx + Math.cos(ang) * rr, yMin + 1.5, cz + Math.sin(ang) * rr);
+      idx.push(0, v, v === nVert ? 1 : v + 1);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, water));
+  }
+}
+
+/* ============================================================
+   n°22 — SKYLINE : anneau de silhouettes très lointaines (fog:false)
+   Construit UNE FOIS (graine connue), suit la caméra sans parallaxe.
+   ============================================================ */
+function buildSkyline() {
+  if (skyGroup) return;
+  const seed = snap?.seed ?? 42;
+  const R = 4500;
+  const pos = [], idx = [];
+  const SEG = 48;
+  let vi = 0;
+  for (let s = 0; s < SEG; s++) {
+    const a0 = (s / SEG) * Math.PI * 2, a1 = ((s + 1) / SEG) * Math.PI * 2;
+    const h0 = 80 + posHash(s, 41) * 370;
+    const h1 = 80 + posHash(s + 1, 41) * 370;
+    pos.push(Math.cos(a0) * R, 0, Math.sin(a0) * R);
+    pos.push(Math.cos(a0) * R, h0, Math.sin(a0) * R);
+    pos.push(Math.cos(a1) * R, h1, Math.sin(a1) * R);
+    pos.push(Math.cos(a1) * R, 0, Math.sin(a1) * R);
+    idx.push(vi, vi + 1, vi + 2, vi + 2, vi + 3, vi);
+    vi += 4;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  skyMat = new THREE.MeshBasicMaterial({ color: 0x8aa0b8, fog: false, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+  skyGroup = new THREE.Mesh(geo, skyMat);
+  skyGroup.frustumCulled = false;
+  scene.add(skyGroup);
 }
 
 /* ---- végétation par biome : InstancedMesh ---- */
@@ -675,16 +1114,18 @@ function updateSky() {
   sun.intensity = 0.2 + elev * 1.5;
   moon.position.set(-sunDir.x, Math.max(0.3, 1 - elev), -sunDir.z).multiplyScalar(400);
 
+  const car = followCar();
+  const b = car ? (world?.pts?.find?.((p) => Math.abs(p.x - car.pos3.x) < 50)?.biome ?? 0) : 0;
   const sky = new THREE.Color();
-  let fogNear = 300, fogFar = 2200;
+  /* brouillard PAR BIOME (jour clair) : plaine, forêt serrée, désert
+     air sec, altitude — la nuit et la pluie gardent leurs contraintes */
+  let [fogNear, fogFar] = BIOME_FOG_RANGE[b] ?? [300, 2200];
   if (h >= 21 || h < 5) { sky.setHex(NIGHT); sun.intensity = 0.05; fogNear = 60; fogFar = 900; }
   else if (h < 8) sky.lerpColors(new THREE.Color(NIGHT), new THREE.Color(0xf2b98a), (h - 5) / 3);
   else if (h < 18) sky.setHex(0x87b5d8);
   else if (h < 20) sky.lerpColors(new THREE.Color(0xf2975a), new THREE.Color(NIGHT), (h - 18) / 2.5);
   else sky.setHex(NIGHT);
 
-  const car = followCar();
-  const b = car ? (world?.pts?.find?.((p) => Math.abs(p.x - car.pos3.x) < 50)?.biome ?? 0) : 0;
   const weather = (car?.weather ?? 'dry') === 'rain';
   if (weather) { fogNear = 40; fogFar = 600; sky.multiplyScalar(0.55); }
   scene.background = sky;
@@ -694,6 +1135,15 @@ function updateSky() {
 
   stars.material.opacity = h >= 21 || h < 5 ? 0.9 : 0;
   const nightNow = h >= 20 || h < 7;
+  /* SKYLINE : la même palette que le brouillard — silhouettes laiteuses
+     le jour, discrètes la nuit (0.25) ; suit la caméra sans parallaxe */
+  if (skyGroup) {
+    skyGroup.position.set(camera.position.x, 0, camera.position.z);
+    skyMat.color.copy(scene.fog.color).multiplyScalar(1.06);
+    skyMat.opacity = nightNow ? 0.25 : 0.85;
+  }
+  /* VILLAGES : les points lumineux s'allument avec les POI */
+  for (const g of villageLights) g.material.opacity = nightNow ? 0.9 : 0;
   hemi.intensity = nightNow ? 0.18 : 0.9;
   for (const m of carMeshes.values()) {
     m.headMat.emissive.setHex(nightNow ? 0xfff2b0 : 0x000000);
@@ -720,6 +1170,17 @@ function loop() {
     if (fps < 28 && quality > 0.6) {
       quality = 0.6;
       renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
+      /* ordre de dégradation : 1. skyline, 2. reliefs, 3. villages —
+         la bande L1 JAMAIS (c'est elle qui remplit le fond) */
+      degraStage = Math.min(3, degraStage + 1);
+      if (degraStage >= 1 && skyGroup) skyMat.opacity = 0;
+      if (degraStage >= 2) for (const m of decoRidges) m.visible = false;
+      if (degraStage >= 3) for (const m of villageGroups) m.visible = false;
+    } else if (fps < 28 && quality <= 0.6) {
+      degraStage = Math.min(3, degraStage + 1);
+      if (degraStage >= 1 && skyGroup) skyMat.opacity = 0;
+      if (degraStage >= 2) for (const m of decoRidges) m.visible = false;
+      if (degraStage >= 3) for (const m of villageGroups) m.visible = false;
     } else if (fps > 50 && quality === 1) {
       renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
     }
@@ -785,6 +1246,13 @@ export function dispose() {
       if (o.material?.dispose) o.material.dispose();
     });
     world = null;
+  }
+  /* le skyline vit HORS du groupe fenêtre → destruction explicite */
+  if (skyGroup) {
+    scene.remove(skyGroup);
+    skyGroup.geometry.dispose();
+    skyMat?.dispose();
+    skyGroup = null; skyMat = null;
   }
   for (const m of carMeshes.values()) scene.remove(m.group);
   carMeshes.clear();
