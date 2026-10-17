@@ -113,7 +113,8 @@ export function aggrOf(car: RaceCar): Aggression {
   return a !== undefined && a in AGG ? a : 'standard';
 }
 export const CONTACT_SLOW_S = 30;       // ralentissement après contact léger
-export const PUNCTURE_CAP_KMH = 85;    // crevaison : mode dégradé (vision)
+export const PUNCTURE_CAP_KMH = 70;    // crevaison : mode dégradé bridé (n°27 : 85 → 70, décision Tanguy)
+export const HEAVY_POWER = 0.3;        // dégât lourd : moteur à 30 % de capacité (n°27)
 
 /* ============ BUDGET — revenu périodique, dépenses (vision) ============
    Base fixe + bonus position + bonus de régularité (moitié rythme de
@@ -172,7 +173,7 @@ export const DEFAULT_CONFIG: RaceConfig = {
 export type RacePhase = 'preparation' | 'racing' | 'finished';
 
 export type PlanAction =
-  | { id: number; type: 'refuel' | 'sleep' | 'repair'; atKm?: number }
+  | { id: number; type: 'refuel' | 'sleep' | 'repair'; atKm?: number; hours?: number }
   | { id: number; type: 'refuel'; ifTag: 'fuelLow'; threshold: number }
   | { id: number; type: 'sleep'; ifTag: 'fatigueHigh'; threshold: number; hours: number }
   | { id: number; type: 'power'; power: number }
@@ -201,6 +202,8 @@ export type RaceCar = KinCar & {
   owner: string | null;      // compte joueur propriétaire (null = non attribuée)
   lastSeenSimT: number;      // dernière connexion de SON joueur (arrêt de survie)
   survivalStop: boolean;     // vrai pendant l'arrêt de survie POI
+  survivalKind: PoiKind | null;   // genre du POI de survie visé — reprise après dry (n°27)
+  dryAssisted: boolean;           // une assistance sèche déjà versée pendant la survie (n°27)
   tire: TireKind;           // gommes montées
   tireWear: number;         // usure 0 (neuve) → 1 (morte)
   punctured: boolean;       // crevaison : mode dégradé jusqu'au garage
@@ -277,6 +280,8 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
     owner: null,
     lastSeenSimT: 0,
     survivalStop: false,
+    survivalKind: null,
+    dryAssisted: false,
     tire: 'dures',
     tireWear: 0,
     punctured: false,
@@ -394,14 +399,18 @@ function engageStop(race: Race, car: RaceCar, kind: PoiKind, hours: number) {
 
 function endStop(race: Race, car: RaceCar) {
   /* arrêt de survie : figé jusqu'à la reconnexion de SON joueur —
-     aucun service ne s'applique, aucun faux message de reprise */
-  if (car.survivalStop) return;
+     aucun service ne s'applique, aucun faux message de reprise.
+     EXCEPTION n°27 : la panne sèche est une urgence mécanique —
+     l'assistance se termine TOUJOURS, sinon la voiture reste figée à
+     sec pour toujours et bloque la route derrière elle (mesuré). */
+  if (car.survivalStop && car.stopKind !== 'dry') return;
   if (car.stopKind === 'station') {
     /* dépense : carburant facturé au litre (vision : « dépenses :
        carburant, pneus, réparations, amendes ») */
     const litres = TANK_L - car.fuel;
     car.budget -= litres * FUEL_PRICE;
     car.fuel = TANK_L;
+    car.dryAssisted = false;
     log(car, race.simT, `Plein fait (${Math.round(litres)} L, ${Math.round(litres * FUEL_PRICE)} €) — repart`);
   } else if (car.stopKind === 'hotel') {
     car.fatigue = Math.max(0, car.fatigue - car.stopHours);
@@ -437,6 +446,20 @@ function endStop(race: Race, car: RaceCar) {
       log(car, race.simT, 'Au garage — repart');
     }
   }
+  if (car.survivalStop) {
+    /* n°27 : assistance sèche versée — la voiture rejoint SON point
+       d'arrêt de survie (targetS conservé) et s'y fige jusqu'à la
+       reconnexion. Déjà arrivée → figée sur place. */
+    car.stopKind = car.survivalKind ?? 'station';
+    car.dryAssisted = true;
+    if (car.targetS !== null && car.s < car.targetS) {
+      car.st = 'toStop';
+    } else {
+      car.st = 'stop';
+      car.stopUntil = Infinity;
+    }
+    return;
+  }
   if (car.pendingSG) {
     car.pendingSG = false;
     log(car, race.simT, `Stop-and-go effectué (${STOPANDGO_MIN} min) — repart`);
@@ -450,6 +473,8 @@ function endStop(race: Race, car: RaceCar) {
 export function wakeSurvival(race: Race, car: RaceCar) {
   if (!car.survivalStop) return;
   car.survivalStop = false;
+  car.survivalKind = null;
+  car.dryAssisted = false;
   car.stopKind = null;
   car.targetS = null;
   car.stopUntil = 0;
@@ -481,7 +506,13 @@ function evalPlan(race: Race, car: RaceCar) {
       }
     } else if (a.type !== 'tires' && a.atKm !== undefined) {
       if (car.s / 1000 >= a.atKm) {
-        const ok = engageStop(race, car, a.type as PoiKind, a.type === 'sleep' ? 7 : 0);
+        /* n°27 : le type d'action n'est PAS un genre de POI — mapping
+           explicite. L'ancien `a.type as PoiKind` ne matchait JAMAIS
+           ('repair' ≠ 'garage') : aucun arrêt garage possible. */
+        const kind: PoiKind = a.type === 'refuel' ? 'station'
+          : a.type === 'sleep' ? 'hotel' : 'garage';
+        const hours = a.type === 'sleep' ? ((a as { hours?: number }).hours ?? 7) : 0;
+        const ok = engageStop(race, car, kind, hours);
         if (ok) acts.splice(i, 1);
         return;
       }
@@ -530,7 +561,8 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
       car.st = 'stop';
       car.s = car.targetS;
       car.v = 0;
-      car.stopUntil = race.simT + poiDuration(car);
+      car.stopUntil = car.survivalStop ? Infinity : race.simT + poiDuration(car);
+      if (car.survivalStop) log(car, race.simT, 'ARRÊT DE SURVIE — la voiture dort ici jusqu\'à la reconnexion de son pilote');
       const label = car.stopKind === 'station' ? 'Ravitaillement' : car.stopKind === 'hotel' ? 'Coucher' : car.stopKind === 'garage' ? 'Au garage' : 'Arrêt';
       log(car, race.simT, `${label} — arrêt de ${Math.round(poiDuration(car) / 60)} min`);
       return info;
@@ -538,6 +570,17 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   }
 
   if (car.fuel <= 0) {
+    /* n°27 : pendant un arrêt de survie, une SEULE assistance sèche —
+       une deuxième panne fige la voiture en bord de route (jamais de
+       cycle d'assistance sans fin). */
+    if (car.survivalStop && (car.dryAssisted ?? false)) {
+      car.st = 'stop';
+      car.stopKind = 'roadside';
+      car.v = 0;
+      car.stopUntil = Infinity;
+      log(car, race.simT, 'ARRÊT DE SURVIE — joueur absent, immobilisée en bord de route (plus de carburant)');
+      return info;
+    }
     car.st = 'stop';
     car.stopKind = 'dry';
     car.v = 0;
@@ -559,9 +602,11 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
     }
     if (engaged) {
       car.survivalStop = true;
+      car.survivalKind = car.stopKind;    // n°27 : mémorisé pour reprendre après une panne sèche
       log(car, race.simT, 'ARRÊT DE SURVIE — joueur absent, la voiture dort à un point d\'arrêt');
     } else {
       car.survivalStop = true;
+      car.survivalKind = null;
       car.st = 'stop';
       car.stopKind = 'roadside';
       car.v = 0;
@@ -578,7 +623,10 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
     return info;
   }
 
-  car.pwr = car.plan.power;
+  /* n°27 : dégât lourd = moteur bridé à HEAVY_POWER (30 %) — la
+     réparation au garage (endStop) rend la pleine puissance. Le
+     curseur joueur reste la référence, le facteur est multiplicatif. */
+  car.pwr = car.plan.power * (car.heavyDamage ? HEAVY_POWER : 1);
   evalPlan(race, car);
 
   /* n°24 : PLUS DE PLAFOND — la vitesse est purement physique
@@ -602,7 +650,14 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   if (front) {
     const gap = front.s - car.s;
     const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - 1.05;
-    if (gap < A.gapMax && car.v - front.v > A.dvReq) {
+    /* n°27 : une voiture ARRÊTÉE n'est pas un duel — l'examen
+       d'attaque passe pour TOUS les profils (dvReq forcé ≤ −0,5),
+       sinon le profil sécurité ne dépasse jamais un arrêté :
+       file d'attente infinie (15 h mesurées). Le vrai garde-fou reste
+       la porte de largeur n°16 (CAR_D de séparation réelle). */
+    const frontStopped = front.st === 'stop' || front.st === 'dry' || front.st === 'finish';
+    const dvReqEff = frontStopped ? Math.min(A.dvReq, -0.5) : A.dvReq;
+    if (gap < A.gapMax && car.v - front.v > dvReqEff) {
       const want = CAR_D + A.margin;
       for (const sgn of [front.d >= 0 ? -1 : 1, front.d >= 0 ? 1 : -1]) {
         const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + sgn * want));
@@ -618,10 +673,16 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
       if (Math.abs(t - front.d) >= CAR_D) dT = t;
     }
     const freeGap = gap - CAR_L;
-    const vFront = (front.st === 'stop' || front.st === 'dry' || front.st === 'finish') ? 0 : front.v;
+    const vFront = frontStopped ? 0 : front.v;
     vT = Math.min(vT, vFront + Math.max(0, freeGap - A.followDead) * 0.35
       + (info.attackSide !== 0 ? A.pressMps : 0));
   }
+  /* n°27 : crevaison = consigne plafonnée à PUNCTURE_CAP_KMH — la
+     chaîne de freinage déccélère proprement, la voiture roule mais
+     ne peut plus tenir le rythme. Réparable au garage (endStop).
+     APRÈS la garde de suivi : le devant peut réduire davantage,
+     jamais augmenter au-delà du cap. */
+  if (car.punctured) vT = Math.min(vT, PUNCTURE_CAP_KMH / 3.6);
   driveStep(trk, car, vT, dt, draft);
   const hw = trk.wAt(car.s) - 1.05;
   dT = Math.max(-hw, Math.min(hw, dT));
@@ -651,7 +712,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   /* crevaison surprise : gomme morte → risque par pas, PRNG semé */
   if (!car.punctured && car.tireWear >= TIRE_WEAR_MAX && race.rng() < PUNCTURE_WORN_P) {
     car.punctured = true;
-    log(car, race.simT, 'CREVAISON — gommes mortes, mode dégradé jusqu\'au garage (85 km/h)');
+    log(car, race.simT, `CREVAISON — gommes mortes, mode dégradé jusqu\'au garage (${PUNCTURE_CAP_KMH} km/h)`);
   }
 
   /* MANŒUVRE DE DOUBLAGE = on attaque par le côté à moins de 12 m. Le
@@ -660,7 +721,10 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
      s'expose. Cooldown entre manœuvres ; la gravité monte avec le
      rythme du moment (fatigue + nuit + vitesse). */
   if (car.attackCooldown > 0) car.attackCooldown -= dt;
-  const attacking = info.attackSide !== 0 && front;
+  /* n°27 : pas de tirage de contact pour dépasser un ARRÊTÉ —
+     le RNG des contacts appartient aux duels entre voitures en mouvement */
+  const attacking = info.attackSide !== 0 && front
+    && !(front.st === 'stop' || front.st === 'dry' || front.st === 'finish');
   if (attacking && !car.attackMan && car.attackCooldown <= 0) {
     car.attackMan = true;                 // manœuvre lancée
     car.attackCooldown = A.cooldownS;
@@ -867,7 +931,14 @@ export function stepRace(race: Race, nSteps: number) {
 
 export function rankCars(race: Race): RaceCar[] {
   return [...race.cars].sort((a, b) => {
-    if (a.st === 'finish' && b.st === 'finish') return (a.finishedAt ?? 0) - (b.finishedAt ?? 0);
+    if (a.st === 'finish' && b.st === 'finish') {
+      /* n°27 : fin par durée → même finishedAt pour tous les classés :
+         on départage au KILOMÈTRE ATTEINT (vision : « non-arrivés
+         classés au kilomètre atteint ») — jamais l'ordre d'insertion */
+      const d = (a.finishedAt ?? 0) - (b.finishedAt ?? 0);
+      if (d !== 0) return d;
+      return b.s - a.s;
+    }
     if (a.st === 'finish') return -1;
     if (b.st === 'finish') return 1;
     return b.s - a.s;
@@ -953,7 +1024,7 @@ export function setPlan(car: RaceCar, plan: Plan) {
       || (a.type === 'tires' && a.tire in TIRES)
     ).map((a) => ({ ...a, id: a.id ?? newPlanId() })),
   };
-  if (car.st === 'run') car.pwr = car.plan.power;
+  if (car.st === 'run') car.pwr = car.plan.power * (car.heavyDamage ? HEAVY_POWER : 1);
 }
 
 export const RACE_CONST = {

@@ -31,7 +31,10 @@ import { H, Hroad } from './terrain.ts';
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
 export const BLEND = 250;             // fondu de biome : 2 km
-export const MAX_CACHED = 32;         // fenêtre de chunks en mémoire (~666 km)
+export const MAX_CACHED = 128;        // fenêtre de chunks en mémoire (~2 660 km) — n°27 :
+                                      // étalement mesuré d'un peloton réel (540 km) + recherche
+                                      // POI 200 km/voiture > 666 km → thrashing ×34 ; un chunk
+                                      // ≈ 208 Ko → 128 chunks ≈ 27 Mo : négligeable.
 
 export type PoiKind = 'station' | 'hotel' | 'garage';
 export type Poi = { s: number; kind: PoiKind };

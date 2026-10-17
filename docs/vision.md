@@ -41,7 +41,7 @@
 
 ### Les incidents
 - **Sortie de route** (fatigue critique) : immobilisation chronométrée **+ dégâts** (moteur/boîte), réparables au garage.
-- **Crevaison surprise** : mode dégradé (80-90 km/h max) jusqu'au prochain garage ou arrêt pneus.
+- **Crevaison surprise** : mode dégradé **bridé à 70 km/h** jusqu'au prochain garage ou arrêt pneus (n°27) ; dégât lourd = **moteur à 30 % de capacité** jusqu'au garage.
 - **Météo : grip seulement** — pluie et sable réduisent l'adhérence, la voiture ralentit toute seule (s'attache au μ par biome du moteur).
 - **Surprises uniquement négatives** : crevaison, tempête, orage de sable — jamais d'aubaine.
 
@@ -86,7 +86,7 @@
 - **Contacts & fautes** : chaque MANŒUVRE de doublage lancée porte un risque dosé (constant exporté, tiré du PRNG semé du cœur — jamais Math.random). Gravité croissante avec le rythme du moment (fatigue + nuit + vitesse) : léger = échange de peinture + ralenti ; lourd = crevaison ou dégât réparable — jamais de fin de course par accident. Faute attribuée selon le règlement (intérieur = essieu avant au rétroviseur à la corde ; extérieur = à hauteur ou devant ; espace dû côte à côte) ; sans faute claire = incident de course. Pénalité : stop-and-go au prochain POI + amende si lourde. Journal public détaillé.
 - **Agressivité de conduite** : la conduite a 3 niveaux d'agressivité (sécurité / standard / agressif) réglés dans le plan du joueur, comme le curseur moteur. Le sur-risque de l'agressif vient de la fréquence des manœuvres et de la pression permanente (il colle au devancier), jamais de la probabilité de contact par manœuvre — CONTACT_P est identique pour les trois niveaux, et CAR_D reste un mur physique que aucun niveau ne franchit. Le niveau d'un adversaire n'est pas visible (l'incertitude fait le sel).
 - **Budget** : revenu périodique = base + bonus position + bonus de régularité (moitié rythme stable, moitié absence d'incident). Dépenses : carburant (€/L), pneus, réparations, amendes. Jauge € dans l'interface.
-- **Gommes** : TENDRES (grip haut, usure rapide), DURES (grip moindre, usure lente), PLUIE (grip normal sous la pluie) — choisies à la préparation, changées au garage. La pluie par tronçon (déterministe) réduit μ : les pluie compensent, les secs y perdent. Crevaison surprise à gomme morte : mode dégradé 85 km/h jusqu'au garage.
+- **Gommes** : TENDRES (grip haut, usure rapide), DURES (grip moindre, usure lente), PLUIE (grip normal sous la pluie) — choisies à la préparation, changées au garage. La pluie par tronçon (déterministe) réduit μ : les pluie compensent, les secs y perdent. Crevaison surprise à gomme morte : mode dégradé 70 km/h jusqu'au garage (n°27) ; dégât lourd : moteur à 30 % jusqu'à la réparation. Fin par durée : les non-arrivés classés au kilomètre atteint.
 - **Bulletins d'étape** : toutes les 3 h (constante exportée), biomes et météo des prochains tronçons — déterministes, lus sur l'état de la course.
 - **CB de proximité** : canal global unique, anti-flood 1 message/5 s ; chaque équipe ne reçoit que les messages des équipes à ≤ 100 km. Bandeau direct + journal.
 

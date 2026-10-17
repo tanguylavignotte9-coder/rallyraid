@@ -100,7 +100,7 @@ Points clés :
 Le dépôt est pensé pour être vérifié sans toucher au code :
 
 - **Chaque push** déclenche la CI (onglet *Actions* sur GitHub) : ✔ vert = le moteur est sain.
-- Les **25 tests** (3 fichiers : `core`, `route`, `race`) garantissent : déterminisme bit à bit (moteur, route, course — contacts et reprise après sérialisation inclus) ; continuité aux frontières de chunks ; arrêt de survie (stop sans connexion, reprise à la reconnexion) ; bride de nuit (multiplicateur et plafond) ; contacts et fautes (une course prudente ne produit presque rien) ; budget (revenus, dépenses, amendes) ; usure relative des gommes ; bulletins d'étape.
+- Les **72 tests** (8 fichiers : `core`, `route`, `race`, `aggression`, `gearbox`, `terrain`, `terrain-web`, `fixes27`) garantissent : déterminisme bit à bit (moteur, route, course — contacts et reprise après sérialisation inclus) ; continuité aux frontières de chunks ; arrêt de survie (stop sans connexion, reprise à la reconnexion) ; bride de nuit (multiplicateur et plafond) ; contacts et fautes (une course prudente ne produit presque rien) ; budget (revenus, dépenses, amendes) ; usure relative des gommes ; bulletins d'étape.
 
 ## Feuille de route
 

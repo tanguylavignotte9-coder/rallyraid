@@ -274,12 +274,18 @@ test('budget : revenu périodique + dépense carburant + amende', () => {
 });
 
 test('gommes : usure relative tendres > pluie > dures', () => {
+  /* n°27 : les voitures ÉCARTÉES (jamais de duel → jamais de contact →
+     jamais de crevaison, qui bridge a 70 km/h et fausse l'usure) :
+     on mesure la hiérarchie PURE des composés sur 30 min de route. */
   const race = race2cars(115);
   const [a, b, c] = [race.cars[0]!, race.cars[1]!, addCar(race, 'C', '#333333')];
   a.tire = 'tendres';
   b.tire = 'dures';
   c.tire = 'pluie';
+  b.s += 30_000; c.s += 60_000;   // écartées : chacune roule sa course
   run(race, 1800);
+  assert.ok(!a.punctured && !b.punctured && !c.punctured,
+    'pas de crevaison (voitures écartées)');
   assert.ok(a.tireWear > c.tireWear, `tendres s'usent plus vite que pluie : ${a.tireWear.toFixed(3)} > ${c.tireWear.toFixed(3)}`);
   assert.ok(c.tireWear > b.tireWear, `pluie s'use plus vite que dures : ${c.tireWear.toFixed(3)} > ${b.tireWear.toFixed(3)}`);
 });
