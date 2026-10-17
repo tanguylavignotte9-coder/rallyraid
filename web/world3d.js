@@ -23,6 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
+import { H } from './terrain.js';
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -62,9 +63,8 @@ let orbitT = 0;
 const camPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
 let poiLights = [];
-/* ---- décor n°22 : état des couches L1/L2, gorge, eau, skyline ---- */
+/* ---- décor : état des couches L1/L2, eau, skyline ---- */
 let winS0 = 0;                 // abscisse du 1er point de la fenêtre (hash stable)
-let gorge = null;              // profondeur de ravin par point (0 hors ponts)
 let skyGroup = null, skyMat = null;
 let waterMat = null;            // matériau d'eau PARTAGÉ rivières + lacs
 let villageLights = [];         // Points lumineux des villages (nuit)
@@ -80,10 +80,6 @@ function posHash(a, b) {
   return x - Math.floor(x);
 }
 
-/* ondulation macro du mi-lointain (L1) : PURE de (index, anneau, seed) */
-function macroNoise(i, k, seed) {
-  return Math.sin(i * 0.11 + k * 1.7 + seed * 0.01) * Math.cos(k * 0.83 - i * 0.047);
-}
 
 /* rampe de terrain : le bruit prend de l'amplitude en s'éloignant */
 function terrainRamp(j) { return Math.min(1, j / 12); }
@@ -274,7 +270,6 @@ async function refreshWorld() {
     villageLights = [];
     decorRand = mulberry32(snap.seed ?? 42);
     winS0 = s0;
-    gorge = computeGorge(d.pts);   // AVANT terrain/props : une seule formule
     buildRoad(group, d);
     buildTerrain(group, d);
     buildMidFar(group, d);
@@ -283,7 +278,7 @@ async function refreshWorld() {
     buildWater(group, d);
     buildProps(group, d);
     buildPois(group, d.pois ?? []);
-    buildSkyline();                // UNE FOIS — vit hors du groupe fenêtre
+    buildSkyline(d);               // skyline RÉELLE : reconstruit chaque fenêtre
     scene.add(group);
     if (world) {
       scene.remove(world.group);
@@ -392,56 +387,33 @@ function buildSegments(group, pts, segVal, makeMesh) {
   }
 }
 
-/* hauteur du terrain à distance latérale dist du point p (indice i).
-   UNE formule pour le maillage ET les décors — sinon les arbres
-   flottent ou s'enfoncent là où le terrain ondule. À j=0 le terrain
-   affleure juste SOUS la chaussée (posée à p.z + 0,05) ; la rampe
-   laisse le bruit prendre de l'amplitude en s'éloignant — plus de
-   mur qui enterre le bas-côté ni de vide sous la route. */
+/* hauteur du terrain à distance latérale dist du point p — LE VRAI
+   CHAMP H (n°26). Raccord à la chaussée par FONDU : poids latéral
+   (accotement → terrain sur T_BLEND) + fondu d'écart (le talus
+   s'ouvre dès que le vrai terrain s'écarte de la route) → déblai/
+   remblai doux au sol, vallée qui s'ouvre sous les ponts, roche qui
+   couvre les tunnels. PURE de (position, graine) : stable au
+   rebuild, identique au serveur (core/terrain.ts). */
+const T_BLEND = 45;                    // m : raccord latéral accotement -> H
+const T_GAP_ON = 15, T_GAP_FULL = 35; // m : ouverture du talus selon |gap|
 function terrainY(p, i, dist) {
-  const j = Math.max(0, (dist - (p.w + 2)) / STEP);
-  const ramp = terrainRamp(j);
-  const noise = Math.sin(i * 0.31 + j * 0.17) * Math.cos(j * 0.09 + i * 0.13);
-  let y = p.z - 0.05 + noise * ramp * (3 + j * 1.1);
-  /* RAVIN sous les ponts : s'ouvre LARGEMENT en s'écartant de la
-     chaussée (la chaussée reste sur son tablier) ; gorge est lissé le
-     long de la route → rampe naturelle en amont/aval, stable au
-     rebuild (hash pur). UNE SEULE formule : les props suivent. */
-  if (gorge && gorge[i] > 0) {
-    y -= gorge[i] * Math.min(1, Math.max(0, (dist - (p.w + 6)) / 45));
-  }
-  return y;
+  const seed = snap?.seed ?? 42;
+  const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+  const x = p.x + nx * dist, z = p.y + nz * dist;
+  const hT = H(x, z, seed);
+  const gap = p.z - H(p.x, p.y, seed);
+  const wGap = Math.max(0, Math.min(1, (Math.abs(gap) - T_GAP_ON) / (T_GAP_FULL - T_GAP_ON)));
+  const wDist = Math.max(0, Math.min(1, (dist - (p.w + 2)) / T_BLEND));
+  return p.z - 0.05 + (hT - (p.z - 0.05)) * Math.min(1, wDist + wGap);
 }
-
-/* précalcul du ravin de la fenêtre : cible 25-55 m sur les runs seg=1
-   (ponts), 0 partout ailleurs, puis 3 passes de box blur sur ±20
-   points (bords clampés) → transitions douces et stables. */
-function computeGorge(pts) {
-  const n = pts.length;
-  const target = new Float64Array(n);
-  let i = 0;
-  while (i < n) {
-    if (pts[i].seg === 1) {
-      const runStart = i;
-      while (i < n && pts[i].seg === 1) i++;
-      const depth = 25 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 3) * 30;
-      for (let q = runStart; q < i; q++) target[q] = depth;
-    } else i++;
-  }
-  let cur = target;
-  for (let pass = 0; pass < 3; pass++) {
-    const out = new Float64Array(n);
-    for (let q = 0; q < n; q++) {
-      let acc = 0, cnt = 0;
-      for (let d = -20; d <= 20; d++) {
-        const j = Math.min(n - 1, Math.max(0, q + d));
-        acc += cur[j]; cnt++;
-      }
-      out[q] = acc / cnt;
-    }
-    cur = out;
-  }
-  return cur;
+/* terrain à une position monde QUELCONQUE (maisons, clochers, lumières
+   de village) — sans le poids latéral ; même fondu d'écart. */
+function terrainAtXY(p, x, z) {
+  const seed = snap?.seed ?? 42;
+  const hT = H(x, z, seed);
+  const gap = p.z - H(p.x, p.y, seed);
+  const wGap = Math.max(0, Math.min(1, (Math.abs(gap) - T_GAP_ON) / (T_GAP_FULL - T_GAP_ON)));
+  return p.z - 0.05 + (hT - (p.z - 0.05)) * wGap;
 }
 
 /* ---- terrain : manteau low-poly ~400 m de chaque côté ---- */
@@ -521,7 +493,7 @@ function buildMidFar(group, d) {
         const dist = RINGS[k];
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
-        const y = terrainY(p, i, dist) + macroNoise(i, k, seed) * macroAmp(p.biome, k);
+        const y = terrainY(p, i, dist);
         let c;
         if (p.biome === 0) {
           /* PATCHWORK AGRICOLE : parcelles ~220 m, haies aux frontières */
@@ -567,15 +539,6 @@ function buildMidFar(group, d) {
   group.add(mesh);
 }
 
-/* amplitude macro de la bande L1 par biome — les CONTREFORTS
-   d'altitude se REFERMENT vers l'extérieur (la vallée s'enferme) */
-function macroAmp(biome, k) {
-  const t = k / 9;   // 0 (proche) → 1 (loin)
-  if (biome === 0) return 4 + t * 8;            // plaine quasi plate
-  if (biome === 1) return 8 + t * 12;           // forêt
-  if (biome === 2) return 15 + t * 20;          // dunes
-  return 20 + t * 40;                           // altitude : contreforts
-}
 
 /* ============================================================
    n°22 — RELIEFS L2 LOW-POLY DANS LA BRUME (1,2-2,2 km)
@@ -597,30 +560,35 @@ function buildRidges(group, d) {
     const dist = 1200 + h3 * 1000;
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
     const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
-    const hArr = [60, 150, 100, 250, 80, 250, 300, 700];   // par biome
-    const amp = hArr[p.biome] ?? 100;
-    const H = amp * (0.5 + h2 * 0.5);
+    /* base et amplitude RÉELLES (n°26) : le vrai H autour du candidat */
+    let hMin = Infinity, hMax = -Infinity;
+    for (const o of [[0, 0], [400, 0], [-400, 0], [0, 400], [0, -400]]) {
+      const v = H(cx + o[0], cz + o[1], seed);
+      if (v < hMin) hMin = v;
+      if (v > hMax) hMax = v;
+    }
+    const ridgeH = Math.max(60, (hMax - hMin) * (0.5 + h2 * 0.5));
     const W = 250 + h3 * 450;
     /* crête en dents de scie : ligne de base + sommets */
     const pos = [], idx = [];
     const TEETH = 5 + Math.floor(h1 * 4);
     const dirX = Math.cos(p.hd + Math.PI / 2), dirZ = Math.sin(p.hd + Math.PI / 2);
     let vi = 0;
-    const baseY = (p.biome === 3 && p.z > 200) ? p.z - 40 : p.z - 10;
+    const baseY = hMin - 5;
     const snow = new THREE.Color('#eef2f5');
     const c = new THREE.Color(BIOME_GROUND[p.biome] ?? '#7a8a5a');
     c.multiplyScalar(0.55);   // teinte ASSOMBRIE : lisibilité en silhouette
-    if (p.biome === 3 && baseY + H > SNOW_ALT) c.lerp(snow, Math.min(1, (baseY + H - SNOW_ALT) / 120));
+    if (p.biome === 3 && baseY + ridgeH > SNOW_ALT) c.lerp(snow, Math.min(1, (baseY + ridgeH - SNOW_ALT) / 120));
     const cols = [];
     for (let t = 0; t <= TEETH; t++) {
       const u = t / TEETH;
       const bx = cx + dirX * (u - 0.5) * W * 2;
       const bz = cz + dirZ * (u - 0.5) * W * 2;
       pos.push(bx, baseY, bz); cols.push(c.r, c.g, c.b);
-      const peakH = baseY + H * (0.6 + 0.4 * posHash(m * 10 + t, 31));
+      const peakH = baseY + ridgeH * (0.6 + 0.4 * posHash(m * 10 + t, 31));
       if (p.biome === 2) {
         /* MESA tabulaire : plateau plat + flancs raides */
-        const topH = baseY + H * 0.85;
+        const topH = baseY + ridgeH * 0.85;
         pos.push(bx + dirX * 8, topH, bz + dirZ * 8); cols.push(c.r, c.g, c.b);
         pos.push(bx - dirX * 8, topH, bz - dirZ * 8); cols.push(c.r, c.g, c.b);
       } else {
@@ -656,11 +624,13 @@ function buildRidges(group, d) {
    n°22 — VILLAGES (plaine) + FERMES ISOLÉES
    REPÈRES placés par HASH PUR de cellule (500 m d'arc) : reconstruits
    À L'IDENTIQUE au rebuild de la fenêtre. Chaque maison est posée à
-   terrainY + macroNoise du L1 à sa position.
+   SA position H (n°26), filtrée par praticabilité de pente.
    ============================================================ */
 function buildVillages(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
+  const VILL_P = [0.022, 0.012, 0.006, 0.008];
+  const FARM_P = [0.008, 0.004, 0.002, 0.003];
   villageLights = [];
   villageGroups = [];
   const wallGeo = new THREE.BoxGeometry(6, 4, 5);
@@ -681,15 +651,23 @@ function buildVillages(group, d) {
     const i = Math.round(sCell / STEP);
     if (i < 2 || i >= pts.length - 2) continue;
     const p = pts[i];
-    if (p.biome !== 0) continue;                    // plaine SEULEMENT
-    const isVillage = posHash(cell, 7) < 0.022;
-    const isFarm = !isVillage && posHash(cell, 9) < 0.008;
+    const b = p.biome;
+    const isVillage = posHash(cell, 7) < VILL_P[b];
+    const isFarm = !isVillage && posHash(cell, 9) < FARM_P[b];
     if (!isVillage && !isFarm) continue;
     const side = posHash(cell, 8) < 0.5 ? -1 : 1;
     const dist = isVillage ? 350 + posHash(cell, 10) * 850 : 250 + posHash(cell, 10) * 300;
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
     const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
-    const l1y = terrainY(p, i, dist) + macroNoise(i, Math.round(dist / 400), seed) * macroAmp(0, Math.min(9, Math.round(dist / 200)));
+    let hMin = Infinity, hMax = -Infinity;
+    for (let a = -50; a <= 50; a += 25)
+      for (let b2 = -50; b2 <= 50; b2 += 25) {
+        const v = H(cx + a, cz + b2, seed);
+        if (v < hMin) hMin = v;
+        if (v > hMax) hMax = v;
+      }
+    if ((hMax - hMin) / 100 > 0.12) continue;   // terrain non praticable
+    const l1y = terrainAtXY(p, cx, cz);
     const nHouse = isVillage ? 6 + Math.floor(posHash(cell, 12) * 13) : 2;
     const radius = isVillage ? 40 + posHash(cell, 13) * 80 : 12;
     for (let h = 0; h < nHouse; h++) {
@@ -697,10 +675,10 @@ function buildVillages(group, d) {
       const rr = radius * (0.55 + posHash(cell * 10 + h, 15) * 0.7);
       const hx = cx + Math.cos(ang) * rr, hz = cz + Math.sin(ang) * rr;
       const rot = p.hd + (posHash(cell * 10 + h, 16) - 0.5) * 0.9;
-      pushHouse(hx, l1y, hz, rot);
+      pushHouse(hx, terrainAtXY(p, hx, hz), hz, rot);
     }
     /* clocher sur ~1 village sur 2 */
-    if (isVillage && posHash(cell, 17) < 0.5) churches.push([cx, l1y, cz, p.hd]);
+    if (isVillage && posHash(cell, 17) < 0.5) churches.push([cx, terrainAtXY(p, cx, cz), cz, p.hd]);
     /* NUIT : points lumineux chauds — allumés avec les POI */
     if (isVillage) {
       const nL = 4 + Math.floor(posHash(cell, 18) * 6);
@@ -708,7 +686,7 @@ function buildVillages(group, d) {
         const ang = posHash(cell * 10 + l, 19) * Math.PI * 2;
         const rr = radius * posHash(cell * 10 + l, 20);
         const g = new THREE.Points(
-          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(cx + Math.cos(ang) * rr, l1y + 3, cz + Math.sin(ang) * rr)]),
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(cx + Math.cos(ang) * rr, terrainAtXY(p, cx + Math.cos(ang) * rr, cz + Math.sin(ang) * rr) + 3, cz + Math.sin(ang) * rr)]),
           new THREE.PointsMaterial({ color: 0xffd9a0, size: 3, transparent: true, opacity: 0 }));
         group.add(g);
         villageLights.push(g);
@@ -759,25 +737,33 @@ function buildWater(group, d) {
       const amp = 15 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 5) * 25;
       const pos = [], idx = [];
       let vi = 0;
+      let deepEnough = false;
       for (let q = runStart; q <= runEnd; q++) {
         const p = pts[q];
         const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
         const meander = Math.sin((q - runStart) * 0.08 + phase) * amp;
-        const y = p.z - (gorge ? gorge[q] : 0) + 2;
+        /* fond de vallée RÉEL : min de H sur la traversée latérale */
+        let hb = Infinity;
+        for (let dd = -150; dd <= 150; dd += 25)
+          hb = Math.min(hb, H(p.x + nx * dd, p.y + nz * dd, seed));
+        if (p.z - hb >= 8) deepEnough = true;
+        const y = hb + 2;
         pos.push(p.x + nx * (meander - width / 2), y, p.y + nz * (meander - width / 2));
         pos.push(p.x + nx * (meander + width / 2), y, p.y + nz * (meander + width / 2));
         if (q < runEnd) { idx.push(vi, vi + 1, vi + 2, vi + 1, vi + 3, vi + 2); }
         vi += 2;
       }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      geo.setIndex(idx);
-      geo.computeVertexNormals();
-      group.add(new THREE.Mesh(geo, water));
+      if (deepEnough) {
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        group.add(new THREE.Mesh(geo, water));
+      }
     } else i++;
   }
-  /* LACS : cellules de 2 000 m, plaine/forêt, disque irrégulier posé
-     au point BAS local de la bande L1 (min de macroNoise voisin) */
+  /* LACS : cellules de 2 000 m, plaine/forêt — vrais minima locaux
+     de H (n°26), disque d'eau posé dans la cuvette réelle */
   for (let cell = Math.floor(winS0 / 2000); cell <= Math.floor((winS0 + pts.length * STEP) / 2000); cell++) {
     if (posHash(cell, 13) >= 0.045) continue;
     const sCell = cell * 2000 - winS0;
@@ -785,29 +771,79 @@ function buildWater(group, d) {
     if (i < 2 || i >= pts.length - 2) continue;
     const p = pts[i];
     if (p.biome !== 0 && p.biome !== 1) continue;
-    const side = posHash(cell, 22) < 0.5 ? -1 : 1;
-    const dist = 500 + posHash(cell, 24) * 1000;
-    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-    const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
-    /* point bas local : min de macroNoise échantillonné autour */
-    let yMin = Infinity;
-    for (let q = -4; q <= 4; q++) {
-      for (let k = 0; k < 10; k++) {
-        const y = terrainY(p, i, dist) + macroNoise(i + q, k, seed) * macroAmp(p.biome, k);
-        if (y < yMin) yMin = y;
+    /* VRAI minimum local de H (n°26) : scan fin 25 m — la grille est
+       remplie D'ABORD dans un Float64Array (~6 000 appels H), puis on
+       détecte les minima locaux stricts. Zone : latéral 300-1600 m
+       DES DEUX côtés, ±700 m le long. */
+    const SP = 25, NW = 53, NL = 57;
+    const grid = new Float64Array(NW * NL * 2);
+    let best = null;
+    for (let side2 = 0; side2 < 2; side2++) {
+      const sgn = side2 === 0 ? -1 : 1;
+      for (let jj = 0; jj < NL; jj++) {
+        const dj = -700 + jj * SP;
+        for (let kk = 0; kk < NW; kk++) {
+          const dd = 300 + kk * SP;
+          const gx = p.x + nx * sgn * dd + Math.cos(p.hd) * dj;
+          const gz = p.y + nz * sgn * dd + Math.sin(p.hd) * dj;
+          grid[(side2 * NL + jj) * NW + kk] = H(gx, gz, seed);
+        }
       }
     }
+    for (let side2 = 0; side2 < 2 && !best; side2++) {
+      for (let jj = 1; jj < NL - 1; jj++) {
+        const dj = -700 + jj * SP;
+        if (Math.abs(dj) > 500) continue;   // rester dans la fenêtre rendue
+        for (let kk = 1; kk < NW - 1; kk++) {
+          const v = grid[(side2 * NL + jj) * NW + kk];
+          let isMin = true;
+          for (let a = -1; a <= 1 && isMin; a++)
+            for (let b2 = -1; b2 <= 1; b2++) {
+              if (!a && !b2) continue;
+              if (grid[(side2 * NL + jj + b2) * NW + kk + a] <= v) { isMin = false; break; }
+            }
+          if (!isMin) continue;
+          const dd = 300 + kk * SP;
+          const sgn = side2 === 0 ? -1 : 1;
+          const gx = p.x + nx * sgn * dd + Math.cos(p.hd) * dj;
+          const gz = p.y + nz * sgn * dd + Math.sin(p.hd) * dj;
+          /* cuvette vs anneau 250 m */
+          let ringMin = Infinity;
+          for (let a = 0; a < 8; a++) {
+            const v2 = H(gx + Math.cos(a * Math.PI / 4) * 250, gz + Math.sin(a * Math.PI / 4) * 250, seed);
+            if (v2 < ringMin) ringMin = v2;
+          }
+          const depth = ringMin - v;
+          if (depth >= 1.2 && (!best || depth > best.depth))
+            best = { x: gx, z: gz, c: v, depth };
+        }
+      }
+    }
+    if (!best) continue;
+    /* rayon du disque : le plus grand R tel que le cercle (12 pts)
+       reste au-dessus du plan d'eau best.c + 0,6·depth */
+    const lvl = best.c + 0.6 * best.depth;
+    let R = 0;
+    for (let r = 300; r >= 50; r -= 25) {
+      let ok = true;
+      for (let a = 0; a < 12; a++) {
+        const v2 = H(best.x + Math.cos(a * Math.PI / 6) * r, best.z + Math.sin(a * Math.PI / 6) * r, seed);
+        if (v2 < lvl) { ok = false; break; }
+      }
+      if (ok) { R = r; break; }
+    }
+    if (R < 50) continue;
+    const y = lvl;
     const nVert = 12 + Math.floor(posHash(cell, 25) * 9);
-    const R = 60 + posHash(cell, 26) * 160;
-    const pos = [cx, yMin + 1.5, cz];
+    const Rlake = Math.min(R, 60 + posHash(cell, 26) * 160);
+    const pos = [best.x, y, best.z];
     const idx = [];
     for (let v = 1; v <= nVert; v++) {
       const ang = (v / nVert) * Math.PI * 2;
-      const rr = R * (0.7 + posHash(cell * 10 + v, 27) * 0.5);
-      pos.push(cx + Math.cos(ang) * rr, yMin + 1.5, cz + Math.sin(ang) * rr);
+      const rr = Rlake * (0.7 + posHash(cell * 10 + v, 27) * 0.5);
+      pos.push(best.x + Math.cos(ang) * rr, y, best.z + Math.sin(ang) * rr);
       idx.push(0, v, v === nVert ? 1 : v + 1);
-    }
-    const geo = new THREE.BufferGeometry();
+    }    const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     geo.setIndex(idx);
     geo.computeVertexNormals();
@@ -816,20 +852,30 @@ function buildWater(group, d) {
 }
 
 /* ============================================================
-   n°22 — SKYLINE : anneau de silhouettes très lointaines (fog:false)
-   Construit UNE FOIS (graine connue), suit la caméra sans parallaxe.
+   n°26 — SKYLINE RÉELLE : le vrai H à 4,5 km — les montagnes
+   visibles sont celles que la route traverse réellement.
+   Reconstruit à chaque fenêtre (l'horizon change avec la position).
    ============================================================ */
-function buildSkyline() {
-  if (skyGroup) return;
+function buildSkyline(d) {
   const seed = snap?.seed ?? 42;
+  const pts = d.pts;
+  const mid = pts[Math.floor(pts.length / 2)];
+  if (skyGroup) {           // reconstruit à chaque fenêtre : le VRAI
+    scene.remove(skyGroup);  // horizon change avec la position
+    skyGroup.geometry.dispose();
+    skyGroup.material.dispose();
+    skyGroup = null;
+  }
   const R = 4500;
   const pos = [], idx = [];
   const SEG = 48;
   let vi = 0;
   for (let s = 0; s < SEG; s++) {
     const a0 = (s / SEG) * Math.PI * 2, a1 = ((s + 1) / SEG) * Math.PI * 2;
-    const h0 = 80 + posHash(s, 41) * 370;
-    const h1 = 80 + posHash(s + 1, 41) * 370;
+    /* silhouette RÉELLE : le vrai H à 4,5 km, relatif à l'altitude
+       locale — on voit les montagnes que la route traverse réellement */
+    const h0 = Math.max(40, H(mid.x + Math.cos(a0) * R, mid.y + Math.sin(a0) * R, seed) - mid.z + 60);
+    const h1 = Math.max(40, H(mid.x + Math.cos(a1) * R, mid.y + Math.sin(a1) * R, seed) - mid.z + 60);
     pos.push(Math.cos(a0) * R, 0, Math.sin(a0) * R);
     pos.push(Math.cos(a0) * R, h0, Math.sin(a0) * R);
     pos.push(Math.cos(a1) * R, h1, Math.sin(a1) * R);

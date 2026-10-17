@@ -16,8 +16,8 @@
    fondues sur 2 km. Le plan de virages garde les MENUS du proto par
    biome (droites longues au désert, épingles en altitude…) et le cap
    est refermé sur chaque chunk (l'itinéraire chemine sans spiraler).
-   L'altitude dérive par bruit lissé avec un léger retour à la
-   moyenne : des collines crédibles sur 20 000 km sans dérive folle.
+   L'altitude vient du CHAMP DE MONDE (terrain.ts, n°25) : Hroad
+   (géographie terrassée) + fastAt (détail voiture pur).
 
    Points d'intérêt (station, hôtel, garage) : posés par un CURSEUR
    GLOBAL par type — continuité parfaite aux frontières de chunks,
@@ -295,9 +295,6 @@ export const BIOME_W = [3.75, 3.0, 3.6, 1.6];
 export const BIOME_SURF_MU = [1.0, 0.9, 0.9, 0.92];
 /* rugosité du revêtement (× crr du biome) */
 export const BIOME_SURF_CRR = [1.0, 1.25, 1.15, 1.1];
-/* amplitude du relief (× le gradient de bruit) : le désert VALLONNE,
-   l'altitude grimpe vers les cols */
-export const BIOME_RELIEF = [1.0, 1.2, 2.2, 2.6];
 /* écart d'altitude du TERRAIN environnant vs tracé : ravin sous un
    pont, roche au-dessus d'un tunnel (données du tracé, déterministes) */
 export const SEG_GROUND = 0;    // route au sol
@@ -328,7 +325,6 @@ export function buildChunk(rt: Route, k: number): Chunk {
      changent D'AUCUN BIT par rapport à la V3 — le diff V4 est purement
      additif. */
   const noise3 = makeNoise(mulberry32(((rt.seed ^ 0x70731733) | 0) + Math.imul(k + 1, 2246822519) | 0));
-  const FASTK = [0.010, 0.014, 0.045, 0.012]; // pente max de l'octave rapide, par biome
   const s0 = k * RCHUNK;
 
   /* ---- paramètres de biome par échantillon (fondu 2 km) ---- */
@@ -337,7 +333,6 @@ export function buildChunk(rt: Route, k: number): Chunk {
   const mua = new Float64Array(RSAMP);
   const crrA = new Float64Array(RSAMP);
   const biome = new Float64Array(RSAMP);
-  const grad = new Float64Array(RSAMP);
   for (let i = 0; i < RSAMP; i++) {
     const bz = biomeBlendR(rt, k * RSAMP + i);
     const A = BIOMES[bz.a];
@@ -352,7 +347,6 @@ export function buildChunk(rt: Route, k: number): Chunk {
     /* revêtement : modulation μ/crr du sol (terre/sable/pierre) */
     mua[i] = lerp(A.mu * BIOME_SURF_MU[bz.a], B.mu * BIOME_SURF_MU[bz.b]);
     crrA[i] = lerp(A.crr * BIOME_SURF_CRR[bz.a], B.crr * BIOME_SURF_CRR[bz.b]);
-    grad[i] = lerp(A.grad, B.grad);
   }
 
   /* ---- plan de virages : LES MENUS DU PROTO, biome par biome.
@@ -437,32 +431,8 @@ export function buildChunk(rt: Route, k: number): Chunk {
   xs[0] = 0;
   zs[0] = 0;
   h[0] = e.h;
-  const inc = new Float64Array(RSAMP);
-  const H_PULL = 2e-6; // retour à la moyenne : σ stationnaire ≈ 150 m
-  /* le RELIEF suit le biome : le désert VALLONNE (la dune creuse la
-     pointe en pleine ligne droite), l'altitude grimpe vers les cols.
-     L'amplitude (BIOME_RELIEF) module le gradient fondu par échantillon. */
-  const relief = new Float64Array(RSAMP);
-  for (let i = 0; i < RSAMP; i++) {
-    const bz = biomeBlendR(rt, k * RSAMP + i);
-    relief[i] = bz.a + (bz.b - bz.a) * bz.t;
-  }
-  for (let i = 0; i < RSAMP; i++) {
-    const rA = BIOME_RELIEF[Math.floor(relief[i])] ?? 1;
-    const fk = FASTK[Math.floor(relief[i])] ?? 0.010;
-    inc[i] = 0; // TF : macro = champ de monde ; détail voiture = fastAt (pur)
-  }
-  const incS = new Float64Array(RSAMP);
-  const KI = 4;
-  for (let i = 0; i < RSAMP; i++) {
-    let a3 = 0;
-    let n = 0;
-    for (let d = -KI; d <= KI; d++) {
-      const j = i + d;
-      if (j >= 0 && j < RSAMP) { a3 += inc[j]; n++; }
-    }
-    incS[i] = a3 / n;
-  }
+  /* n°25 : l'altitude = Hroad(position) + fastAt — l'ancien accumulateur
+     de bruit d'abscisse (inc/incS, H_PULL) a été supprimé au n°26. */
   const wps = rt.wps;
   const KH = 0.12, CMAX = 0.008;   // gain de poursuite / virage max par pas (R ≈ 1 km)
   let wpIdx = e.wpIdx;
@@ -544,12 +514,10 @@ export function buildChunk(rt: Route, k: number): Chunk {
   };
   rt.poiCur[k + 1] = cursor;
 
-  /* ---- PONTS et TUNNELS (altitude) : données du tracé par sample.
-     En zone d'altitude, quand le tracé plonge (ravin) il passe sur un
-     PONT — le terrain s'en écarte vers le bas ; quand il traverse une
-     crête, un TUNNEL — le terrain monte au-dessus. Déterministe
-     (PRNG du chunk), continu aux frontières (les segments sont
-     intérieurs au chunk, jamais à cheval). ---- */
+  /* ---- PONTS et TUNNELS TOPOGRAPHIQUES (n°25) : l'écart route/terrain
+     décide — gap lissé > +25 m → PONT (vraie vallée), < −25 m → TUNNEL
+     (vraie crête), tous biomes, SANS PRNG. Un run PEUT être à cheval
+     sur deux chunks : le gap est pur de la position. ---- */
   const terr = new Float64Array(RSAMP);
   const segType = new Float64Array(RSAMP);
   /* écart route/terrain (m) : > 0 = terrain SOUS la route (vallée → PONT),
