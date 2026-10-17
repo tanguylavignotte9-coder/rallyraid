@@ -26,6 +26,7 @@
    de la vision : pas de files, services à la carte. */
 
 import { mulberry32, makeNoise, SEG, BIOMES, type Track } from './engine.ts';
+import { H, Hroad } from './terrain.ts';
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -85,25 +86,21 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
   const wps: Waypoint[] = [{ x: 0, y: 0, b: 0 }];
   let x = 0, y = 0, bearing = 0;
   let driven = 0, net = 0;
-  while (driven < totalKm * 1000 * 1.05) {   // 5% de couverture en plus
-    const Lw = 18000 + rand() * 27000;         // tronçon 18-45 km
-    let done = false;
-    for (let att = 0; att < 12 && !done; att++) {
+  while (driven < totalKm * 1000 * 1.05) {
+    const Lw = 18000 + rand() * 27000;
+    let best: { b: number; x: number; y: number; cost: number } | null = null;
+    for (let att = 0; att < 12; att++) {
       const u = rand();
       let db: number;
-      if (u < 0.45) db = (rand() < 0.5 ? -1 : 1) * (8 + rand() * 17) * WP_D2R;      // méandre
-      else if (u < 0.78) db = (rand() < 0.5 ? -1 : 1) * (25 + rand() * 25) * WP_D2R; // contournement
-      else db = (rand() < 0.5 ? -1 : 1) * (50 + rand() * 60) * WP_D2R;              // bascule majeure : RETOUR
-      db *= 1 - att * 0.08;                    // chaque échec resserre le tirage
-      let bNew = wpWrap(bearing * 0.45 + db);  // persistance partielle du serpent
-      /* garde de progression nette : retour arrière possible, retard
-         démesuré sur l'axe interdit (cible 58%) */
+      if (u < 0.45) db = (rand() < 0.5 ? -1 : 1) * (8 + rand() * 17) * WP_D2R;
+      else if (u < 0.78) db = (rand() < 0.5 ? -1 : 1) * (25 + rand() * 25) * WP_D2R;
+      else db = (rand() < 0.5 ? -1 : 1) * (50 + rand() * 60) * WP_D2R;
+      db *= 1 - att * 0.08;
+      let bNew = wpWrap(bearing * 0.45 + db);
       const behind = net + Lw * Math.cos(bNew) - (driven + Lw) * 0.58;
       if (behind < -0.30 * Lw) bNew = wpWrap(bNew * 0.3);
       if (Math.abs(bNew) > 120 * WP_D2R) bNew = Math.sign(bNew) * 120 * WP_D2R;
       const nx = x + Lw * Math.cos(bNew), ny = y + Lw * Math.sin(bNew);
-      /* garde extrémité : TOUS les segments existants ; les deux plus
-         récents à marge réduite */
       let ok = true;
       for (let j = 0; j + 1 <= wps.length - 1 && ok; j++) {
         const margin = j >= wps.length - 3 ? WP_DMIN_RECENT : WP_DMIN_OLD;
@@ -116,32 +113,36 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
           if (segPointDist({ x: mx, y: my }, wps[j], wps[j + 1]) < margin) ok = false;
         }
       }
-      if (ok) { x = nx; y = ny; bearing = bNew; done = true; }
-      else if (att === 11) {
-        /* dégagement : balayage ±120° (préférence proche de l'axe),
-           on RETIENT LE PLUS DÉGAGÉ — jamais de tronçon fautif choisi
-           aveuglément. */
-        let bestB = 0, bestC = -1;
-        for (const d of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7,
-                         8, -8, 9, -9, 10, -10, 11, -11, 12, -12]) {
-          const cand = d * 10 * WP_D2R;
-          const cx = x + Lw * Math.cos(cand), cy = y + Lw * Math.sin(cand);
-          let cmin = Infinity;
-          for (let j = 0; j + 1 <= wps.length - 1; j++) {
-            const dd = segPointDist({ x: cx, y: cy }, wps[j], wps[j + 1]);
-            if (dd < cmin) cmin = dd;
-          }
-          if (cmin > bestC) { bestC = cmin; bestB = cand; }
-        }
-        bearing = bestB; x += Lw * Math.cos(bearing); y += Lw * Math.sin(bearing);
-        done = true;
+      if (!ok) continue;
+      /* coût altimétrique : altitude moyenne du tronçon (9 sondes)
+         + préférence douce pour les caps peu changeants */
+      let hSum = 0;
+      for (let q = 0; q <= 8; q++) {
+        hSum += H(x + (nx - x) * q / 8, y + (ny - y) * q / 8, seed);
       }
+      const cost = hSum / 9 + 40 * Math.abs(db);
+      if (!best || cost < best.cost) best = { b: bNew, x: nx, y: ny, cost };
+    }
+    if (best) { x = best.x; y = best.y; bearing = best.b; }
+    else {
+      /* dégagement : balayage ±120°, on RETIENT LE PLUS DÉGAGÉ (V2ter) */
+      let bestB = 0, bestC = -1;
+      for (const d of [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7,
+                       8, -8, 9, -9, 10, -10, 11, -11, 12, -12]) {
+        const cand = d * 10 * WP_D2R;
+        const cx = x + Lw * Math.cos(cand), cy = y + Lw * Math.sin(cand);
+        let cmin = Infinity;
+        for (let j = 0; j + 1 <= wps.length - 1; j++) {
+          const dd = segPointDist({ x: cx, y: cy }, wps[j], wps[j + 1]);
+          if (dd < cmin) cmin = dd;
+        }
+        if (cmin > bestC) { bestC = cmin; bestB = cand; }
+      }
+      bearing = bestB; x += Lw * Math.cos(bearing); y += Lw * Math.sin(bearing);
     }
     wps.push({ x, y, b: bearing });
     driven += Lw; net += Lw * Math.cos(bearing);
   }
-  /* waypoint final extrapolé : la fin de course ne peut JAMAIS orbiter
-     autour du dernier sommet */
   wps.push({ x: x + 120000 * Math.cos(bearing), y: y + 120000 * Math.sin(bearing), b: bearing });
   return wps;
 }
@@ -198,6 +199,28 @@ function psiAt(rt: Route, gi: number): number {
   const s = gi * SEG;
   return lat1 * (Math.PI * 2 / L1) * Math.sin(s * (Math.PI * 2 / L1) + psiPhase(rt.seed, 1))
        + lat2 * (Math.PI * 2 / L2) * Math.sin(s * (Math.PI * 2 / L2) + psiPhase(rt.seed, 2));
+}
+
+/* TF — OCTAVE VERTICALE RAPIDE PURE (détail voiture, style biome) :
+   valeur ABSOLUE pure de (graine, index global) — continue aux
+   frontières de chunks, identique à la régénération (ADR 0004), sans
+   dérive. Amplitude recalibrée sur la V4 (résidu vertical 300 m :
+   plaine ~0,1 m, désert ~0,4-0,5 m). */
+const FAST_AMP = [0.010, 0.014, 0.100, 0.028]; // par biome — recalibré valeur absolue
+const FAST_SCALE = 21;
+const fastHash = (seed: number, j: number) => {
+  const v = Math.sin(j * 269.5 + seed * 0.913) * 43758.5453;
+  return (v - Math.floor(v)) * 2 - 1;   // [-1, 1]
+};
+function fastAt(rt: Route, gi: number): number {
+  const bz = biomeBlendR(rt, gi);
+  const fk = FAST_AMP[bz.a] + (FAST_AMP[bz.b] - FAST_AMP[bz.a]) * bz.t;
+  const x = gi / 16.7;   // période ~134 m
+  const j0 = Math.floor(x);
+  const f = x - j0;
+  const t = f * f * (3 - 2 * f);
+  const a = fastHash(rt.seed, j0), b = fastHash(rt.seed, j0 + 1);
+  return fk * FAST_SCALE * (a + (b - a) * t);
 }
 
 export type PoiCursor = Record<PoiKind, number>; // prochain POI pend. par type
@@ -427,7 +450,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
   for (let i = 0; i < RSAMP; i++) {
     const rA = BIOME_RELIEF[Math.floor(relief[i])] ?? 1;
     const fk = FASTK[Math.floor(relief[i])] ?? 0.010;
-    inc[i] = grad[i] * rA * noise2(i * 0.02) * SEG + fk * noise3(i * 0.06) * SEG;
+    inc[i] = 0; // TF : macro = champ de monde ; détail voiture = fastAt (pur)
   }
   const incS = new Float64Array(RSAMP);
   const KI = 4;
@@ -485,7 +508,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
       hd[i + 1] = hd[i] + step[i] + corr + dpsi;
       xs[i + 1] = xs[i] + Math.cos(hd[i]) * SEG;
       zs[i + 1] = zs[i] + Math.sin(hd[i]) * SEG;
-      h[i + 1] = h[i] + incS[i] - h[i] * H_PULL;
+      h[i + 1] = Hroad(e.x + xs[i + 1], e.y + zs[i + 1], rt.seed) + fastAt(rt, k * RSAMP + i + 1);
       hdDev += step[i];
       hdPsi += dpsi;
     } else {
@@ -529,30 +552,24 @@ export function buildChunk(rt: Route, k: number): Chunk {
      intérieurs au chunk, jamais à cheval). ---- */
   const terr = new Float64Array(RSAMP);
   const segType = new Float64Array(RSAMP);
+  /* écart route/terrain (m) : > 0 = terrain SOUS la route (vallée → PONT),
+     < 0 = terrain AU-DESSUS (crête → TUNNEL). Lissé ±6 samples pour des
+     runs propres. SANS PRNG : la topographie décide, tous biomes. */
+  const gap = new Float64Array(RSAMP);
+  for (let i = 0; i < RSAMP; i++) gap[i] = h[i] - H(e.x + xs[i], e.y + zs[i], rt.seed);
+  const gapS = new Float64Array(RSAMP);
   for (let i = 0; i < RSAMP; i++) {
-    const bz = biomeBlendR(rt, k * RSAMP + i);
-    if (bz.a !== 3 && bz.b !== 3) { terr[i] = h[i]; segType[i] = SEG_GROUND; continue; }
-    const slope = i > 0 ? (h[i] - h[i - 1]) / SEG : 0;
-    /* tirage STABLE par (chunk, sample) — jamais un PRNG partagé qui
-       dépendrait de l'ordre d'appel (déterminisme à la régénération) */
-    const r = mulberry32(((rt.seed ^ 0x62726964) | 0) + Math.imul(k * RSAMP + i + 1, 2246822519) | 0)();
-    /* pont sur les ravins (forte descente), tunnel sous les crêtes
-       (forte montée) — seuils bas : ces passages sont FRÉQUENTS en
-       altitude, c'est le caractère du biome (design 2026-10-14) */
-    const isBridge = slope < -0.025 && r > 0.90;
-    const isTunnel = slope > 0.02 && r > 0.90;
-    if (isBridge) {
-      segType[i] = SEG_BRIDGE;
-      terr[i] = h[i] - 35 - (i % 12); // ravin visible sous l'arche
-    } else if (isTunnel) {
-      segType[i] = SEG_TUNNEL;
-      terr[i] = h[i] + 40 + (i % 10); // roche au-dessus de la voûte
-    } else {
-      segType[i] = SEG_GROUND;
-      terr[i] = h[i];
+    let a = 0, n = 0;
+    for (let d = -6; d <= 6; d++) {
+      const j = i + d;
+      if (j >= 0 && j < RSAMP) { a += gap[j]; n++; }
     }
+    gapS[i] = a / n;
   }
-
+  for (let i = 0; i < RSAMP; i++) {
+    terr[i] = h[i] - gap[i];   // = H exact : le serveur connaît le terrain
+    segType[i] = gapS[i] > 25 ? SEG_BRIDGE : gapS[i] < -25 ? SEG_TUNNEL : SEG_GROUND;
+  }
   return { k, s0, hd, xs, zs, h, terr, segType, w, mua, crrA, biome, pois };
 }
 
@@ -589,7 +606,7 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     totalKm,
     finishS: totalKm * 1000,
     nChunks,
-    bound: [{ x: 0, y: 0, hd: 0, h: 0, wpIdx: 0, hdDev: 0, hdPsi: 0 }],
+    bound: [{ x: 0, y: 0, hd: 0, h: Hroad(0, 0, seed), wpIdx: 0, hdDev: 0, hdPsi: 0 }],
     wps: buildWaypoints(seed, totalKm),
     poiDensity,
     poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],
@@ -597,6 +614,7 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     order: [],
     segs: buildSchedule(seed, totalKm),
   };
+  rt.bound[0].h = Hroad(0, 0, seed) + fastAt(rt, 0); // géographie + détail voiture dès le mètre 0
   return rt;
 }
 
