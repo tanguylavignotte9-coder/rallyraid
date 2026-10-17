@@ -55,7 +55,7 @@ export type Chunk = {
    la hauteur porte le retour à la moyenne ; 4 nombres par chunk : on
    garde TOUT l'historique — c'est minuscule et c'est ce qui rend la
    régénération d'un chunk ancien possible sans tout reconstruire. */
-export type Bound = { x: number; y: number; hd: number; h: number; wpIdx: number; hdDev: number };
+export type Bound = { x: number; y: number; hd: number; h: number; wpIdx: number; hdDev: number; hdPsi: number };
 
 /* ---- WAYPOINTS MACRO : l'ossature de l'itinéraire. Fonction PURE de
    (seed, totalKm) — mêmes waypoints au bit près. Tronçons de 18-45 km,
@@ -161,6 +161,45 @@ function sinuAt(seed: number, gi: number): number {
   const w = (1 - Math.cos(Math.PI * t)) / 2;
   return sinuHash(seed, j0) * (1 - w) + sinuHash(seed, j0 + 1) * w;
 }
+/* ============================================================
+   V4 — ONDULATION DE PLATE-FORME (l'échelle de la voiture)
+   ============================================================
+   Constat mesuré sur la V3 : le volant se retourne 1-6 fois par
+   km seulement ; entre les items step = 0 EXACTEMENT et le relief
+   vertical ne vit qu'à 400+ m. Depuis le cockpit (300 m
+   visibles), la route est un arc uniforme : un fleuve tranquille.
+   PSI corrige cela : un méandre CONTINU, bande limitée, PUR de
+   (graine, index global) — PAS de PRNG (identique à la
+   régénération d'un chunk ancien, ADR 0004). Deux composantes :
+   lente (le serpent vu au loin, 0,5-0,7 km) + rapide (le grain
+   de la piste, 0,12-0,17 km). Amplitude en MÈTRES LATÉRAUX par
+   biome, modulée par la sinuosité de portion : les portions
+   calmes ondulent aussi (c'est l'échelle voiture, pas la
+   sinuosité macro).
+
+   La correction de poursuite ne le voit PAS : psi est versé dans
+   hd ET dans hdPsi (accumulateur séparé) — hdDev reste l'exact
+   plan V3, donc menus et POI d'une même graine ne changent
+   D'AUCUN BIT. */
+const PSI_LAT1 = [2.2, 3.0, 1.6, 2.4];      // m, composante lente
+const PSI_L1 = [600, 500, 700, 460];         // m, longueur d'onde lente
+const PSI_LAT2 = [0.8, 1.2, 0.6, 1.0];      // m, composante rapide
+const PSI_L2 = [150, 120, 170, 120];        // m, longueur d'onde rapide
+const psiPhase = (seed: number, c: number) => {
+  const v = Math.sin(c * 91.7 + seed * 0.318) * 43758.5453;
+  return (v - Math.floor(v)) * Math.PI * 2;
+};
+function psiAt(rt: Route, gi: number): number {
+  const bz = biomeBlendR(rt, gi);
+  const lerpB = (p: number[]) => p[bz.a] + (p[bz.b] - p[bz.a]) * bz.t;
+  const m = 0.6 + 0.8 * sinuAt(rt.seed, gi);
+  const lat1 = lerpB(PSI_LAT1) * m, L1 = lerpB(PSI_L1);
+  const lat2 = lerpB(PSI_LAT2) * m, L2 = lerpB(PSI_L2);
+  const s = gi * SEG;
+  return lat1 * (Math.PI * 2 / L1) * Math.sin(s * (Math.PI * 2 / L1) + psiPhase(rt.seed, 1))
+       + lat2 * (Math.PI * 2 / L2) * Math.sin(s * (Math.PI * 2 / L2) + psiPhase(rt.seed, 2));
+}
+
 export type PoiCursor = Record<PoiKind, number>; // prochain POI pend. par type
 
 export type Route = {
@@ -260,6 +299,13 @@ export function buildChunk(rt: Route, k: number): Chunk {
   const rand = chunkRand(rt.seed, k);
   const noise = makeNoise(rand);
   const noise2 = makeNoise(rand);
+  /* octave verticale RAPIDE (crêtes / creux à ~130 m) : la dune creuse
+     la pointe au désert, la tête de piste ondule en plaine. PRNG
+     SÉPARÉ du flux des menus : les items et POI d'une même graine ne
+     changent D'AUCUN BIT par rapport à la V3 — le diff V4 est purement
+     additif. */
+  const noise3 = makeNoise(mulberry32(((rt.seed ^ 0x70731733) | 0) + Math.imul(k + 1, 2246822519) | 0));
+  const FASTK = [0.010, 0.014, 0.045, 0.012]; // pente max de l'octave rapide, par biome
   const s0 = k * RCHUNK;
 
   /* ---- paramètres de biome par échantillon (fondu 2 km) ---- */
@@ -380,7 +426,8 @@ export function buildChunk(rt: Route, k: number): Chunk {
   }
   for (let i = 0; i < RSAMP; i++) {
     const rA = BIOME_RELIEF[Math.floor(relief[i])] ?? 1;
-    inc[i] = grad[i] * rA * noise2(i * 0.02) * SEG;
+    const fk = FASTK[Math.floor(relief[i])] ?? 0.010;
+    inc[i] = grad[i] * rA * noise2(i * 0.02) * SEG + fk * noise3(i * 0.06) * SEG;
   }
   const incS = new Float64Array(RSAMP);
   const KI = 4;
@@ -400,6 +447,10 @@ export function buildChunk(rt: Route, k: number): Chunk {
      dir()) ; l'intégration repart de l'état d'ENTRÉE et le re-accumule
      échantillon par échantillon — pas de double comptage */
   hdDev = e.hdDev;
+  /* V4 : l'offset psi cumulé se porte dans un accumulateur SÉPARÉ —
+     hdDev reste l'exact plan V3 (menus + POI d'une même graine ne
+     changent D'AUCUN BIT), la correction voit le cap macro seul. */
+  let hdPsi = e.hdPsi ?? 0;   // ?? 0 : robustesse
   for (let i = 0; i < RSAMP; i++) {
     /* ---- avancement du waypoint cible : 3 tests, du proche au géométrique.
        NE PAS « simplifier » en un seul test dot<0 : le test dot<0 nu
@@ -424,15 +475,22 @@ export function buildChunk(rt: Route, k: number): Chunk {
     /* DÉ-COUPLAGE : la correction voit le cap MACRO (hd - hdDev), PAS le
        cap total — le wiggle ondole librement autour de l'axe macro sans
        être écrasé par le tracker (mesuré : bruit local +40 %). */
-    let corr = wpWrap(hdT - (hd[i] - hdDev)) * KH;
+    let corr = wpWrap(hdT - (hd[i] - hdDev - hdPsi)) * KH;
     if (corr > CMAX) corr = CMAX; else if (corr < -CMAX) corr = -CMAX;
     if (i + 1 < RSAMP) {
-      hd[i + 1] = hd[i] + step[i] + corr;
+      /* V4 : le méandre psi est versé dans hd ET dans hdPsi — la
+         correction macro ne le voit pas, il ondule librement. Pur de
+         (graine, gi) : régénération d'un chunk ancien identique. */
+      const dpsi = psiAt(rt, k * RSAMP + i + 1) - psiAt(rt, k * RSAMP + i);
+      hd[i + 1] = hd[i] + step[i] + corr + dpsi;
       xs[i + 1] = xs[i] + Math.cos(hd[i]) * SEG;
       zs[i + 1] = zs[i] + Math.sin(hd[i]) * SEG;
       h[i + 1] = h[i] + incS[i] - h[i] * H_PULL;
+      hdDev += step[i];
+      hdPsi += dpsi;
+    } else {
+      hdDev += step[i];
     }
-    hdDev += step[i];
   }
 
   /* ---- POI : le curseur global de chaque type avance dans le chunk ---- */
@@ -459,6 +517,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
     h: h[RSAMP - 1],
     wpIdx,
     hdDev,
+    hdPsi,
   };
   rt.poiCur[k + 1] = cursor;
 
@@ -530,7 +589,7 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     totalKm,
     finishS: totalKm * 1000,
     nChunks,
-    bound: [{ x: 0, y: 0, hd: 0, h: 0, wpIdx: 0, hdDev: 0 }],
+    bound: [{ x: 0, y: 0, hd: 0, h: 0, wpIdx: 0, hdDev: 0, hdPsi: 0 }],
     wps: buildWaypoints(seed, totalKm),
     poiDensity,
     poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],

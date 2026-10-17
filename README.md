@@ -114,6 +114,7 @@ Le dépôt est pensé pour être vérifié sans toucher au code :
 | **5a — Comptes & admin** | Sessions scrypt, page admin (comptes, reset complet), interface une-voiture | ✅ cette version |
 | **5 — Compétition** | Course multi-jouieurs de plusieurs jours, doublages/rétablissements | ⬜ |
 | **Décor : profondeur** | Couture route/terrain, mi-lointain (L1), horizon (reliefs + skyline), villages, eau | ✅ |
+| **Route V4 : ondulation de plateforme** | Bruit à l'échelle de la voiture (méandre ψ + octave verticale rapide) | ✅ |
 
 ## Décisions fondatrices
 

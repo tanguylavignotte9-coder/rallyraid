@@ -97,6 +97,7 @@
   - *Forêt* : revêtement terre (μ plus bas même à sec), virages serrés et « aveugles », brume ;
   - *Désert* : longues droites VALLONNÉES (la dune creuse la pointe — le profil fait varier la vitesse en pleine ligne droite), sable, larges sections ;
   - *Altitude* : route ÉTROITE à 1 file (le duel côte à côte y est physiquement impossible — la garde anti-collision sépare en LONG), pierre, lacets marqués, PONTS sur les ravins et TUNNELS sous la roche (données du tracé par sample : terrain qui s'écarte du tracé, déterministes et régénérables à l'identique).
+- **La route ondule à toutes les échelles** : du serpent macro (waypoints, courants) au grain de la piste (méandre ψ continu + crêtes verticales rapides) — le volant vit même au milieu des droites du désert.
 - **L'altitude suit le biome** : amplitude de relief par biome (le désert vallonne, l'altitude grimpe vers les cols), retour à la moyenne conservé.
 - **Explorateur de graines** (page admin) : mini-carte vue de dessus, couleurs par biome, profil d'altitude, km par biome, virages par catégorie, densité POI — calculé par le MÊME code de génération que la course, puis l'admin lance le reset avec cette graine.
 - **Fenêtre de préparation** (joueur) : carte complète + profil d'altitude + bandes de biomes le long de la course, un seul graphique mobile first ; POI non marqués.

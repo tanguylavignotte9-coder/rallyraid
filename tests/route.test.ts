@@ -314,3 +314,143 @@ test('route V3 : volant — rotation cap dé-tendancée ≥ 140°/km', () => {
     assert.ok(perKm >= 140, `graine ${seed} : volant dé-tendancé ${perKm.toFixed(0)}°/km < 140`);
   }
 });
+
+/* ============================================================
+   V4 — ONDULATION DE PLATE-FORME (n°23)
+   L'échelle de la voiture : le méandre continu ψ (pur de la
+   graine, découplé du plan V3 via hdPsi) + l'octave verticale
+   rapide. Les menus/courants/waypoints/POI d'une même graine ne
+   changent d'aucun bit par rapport à la V3.
+   ============================================================ */
+test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)', () => {
+  /* deux makeRoute même graine → chunks identiques au bit près */
+  const a = makeRoute(12345, 1000);
+  const b = makeRoute(12345, 1000);
+  for (const k of [0, 1, 5, 20, 40]) {
+    const ca = ensureChunk(a, k), cb = ensureChunk(b, k);
+    assert.deepEqual(Array.from(ca.hd), Array.from(cb.hd), `chunk ${k} hd`);
+    assert.deepEqual(Array.from(ca.xs), Array.from(cb.xs), `chunk ${k} xs`);
+    assert.deepEqual(Array.from(ca.zs), Array.from(cb.zs), `chunk ${k} zs`);
+    assert.deepEqual(Array.from(ca.h), Array.from(cb.h), `chunk ${k} h`);
+  }
+  /* construire 45 chunks puis redemander le 5e après éviction */
+  const trk = routeTrack(a);
+  const before = Array.from(ensureChunk(a, 5).hd);
+  a.chunks.delete(5);
+  a.order = a.order.filter((k) => k !== 5);
+  trk.cvAt(5 * RCHUNK + 100);
+  assert.deepEqual(Array.from(ensureChunk(a, 5).hd), before,
+    'le chunk 5 régénéré doit être identique (ψ pur, pas de PRNG)');
+  /* le flux PRNG des menus n'a pas bougé : les POI de la V3 sont
+     conservés au bit près (hdPsi hors du flux des menus) */
+  const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
+  assert.equal(pa.length, 33, 'POI inchangés vs V3 (graine 12345, 600 km)');
+  assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
+    ['25000:station', '42992:station', '72464:station'], 'positions POI V3 conservées');
+});
+
+test('route V4 : échelle voiture — retournements ≥ 8/km, mort-droit < 5 %', () => {
+  const wrapL = (a: number) => {
+    while (a > Math.PI) a -= 2 * Math.PI;
+    while (a < -Math.PI) a += 2 * Math.PI;
+    return a;
+  };
+  for (const seed of [12345, 777, 20261016]) {
+    const rt = makeRoute(seed, 2500);
+    const trk = routeTrack(rt);
+    const stats: Record<number, { rev: number; km: number; dead: number; n: number }> = {};
+    let acc = 0, prevHd = trk.roadPoint(0).hd, prevSgn = 0;
+    for (let s = 16; s < rt.finishS; s += 16) {
+      const b = Math.floor(trk.biomeAt(s));
+      const st = stats[b] ??= { rev: 0, km: 0, dead: 0, n: 0 };
+      st.km += 0.016; st.n++;
+      if (Math.abs(trk.cvAt(s)) < 2e-5) st.dead++;
+      const hd = trk.roadPoint(s).hd;
+      const d = wrapL(hd - prevHd);
+      prevHd = hd;
+      const sgn = d > 0 ? 1 : d < 0 ? -1 : 0;
+      acc += Math.abs(d);
+      if (sgn !== 0 && prevSgn !== 0 && sgn !== prevSgn && acc > 0.5 * Math.PI / 180) {
+        st.rev++; acc = 0;
+      }
+      if (sgn !== 0) prevSgn = sgn;
+    }
+    for (const [b, st] of Object.entries(stats)) {
+      assert.ok(st.km > 100, `graine ${seed} biome ${b} : assez de km (${st.km.toFixed(0)})`);
+      assert.ok(st.rev / st.km >= 8,
+        `graine ${seed} biome ${b} : ${(st.rev / st.km).toFixed(1)} retournements/km < 8`);
+      assert.ok(st.dead / st.n < 0.05,
+        `graine ${seed} biome ${b} : mort-droit ${(100 * st.dead / st.n).toFixed(1)}% ≥ 5%`);
+    }
+  }
+});
+
+test('route V4 : gardes macro intactes + volant borné', () => {
+  const segPD = (px: number, py: number, a: Waypoint, b: Waypoint) => {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const L2 = dx * dx + dy * dy;
+    let t = L2 === 0 ? 0 : ((px - a.x) * dx + (py - a.y) * dy) / L2;
+    t = Math.max(0, Math.min(1, t));
+    return Math.hypot(a.x + dx * t - px, a.y + dy * t - py);
+  };
+  for (const seed of [12345, 777]) {
+    const rt = makeRoute(seed, 2000);
+    const trk = routeTrack(rt);
+    const pts: { x: number; y: number }[] = [];
+    for (let s = 0; s < rt.finishS; s += 100) pts.push(trk.roadPoint(s));
+    /* 0 auto-croisement (≥ 40 km d'arc, ≥ 30 m) */
+    let minD = Infinity;
+    for (let i = 0; i < pts.length; i++) {
+      for (let j = i + 401; j < pts.length; j++) {
+        const d = Math.hypot(pts[i]!.x - pts[j]!.x, pts[i]!.y - pts[j]!.y);
+        if (d < minD) minD = d;
+      }
+    }
+    assert.ok(minD >= 30, `graine ${seed} : distance mini ${minD.toFixed(0)} m`);
+    /* enveloppe vs polyline waypoints ≤ 9 km */
+    let maxEnv = 0;
+    for (const p of pts) {
+      let best = Infinity;
+      for (let j = 0; j + 1 < rt.wps.length; j++) {
+        const d = segPD(p.x, p.y, rt.wps[j]!, rt.wps[j + 1]!);
+        if (d < best) best = d;
+      }
+      if (best > maxEnv) maxEnv = best;
+    }
+    assert.ok(maxEnv <= 9_000, `graine ${seed} : enveloppe ${(maxEnv / 1000).toFixed(1)} km`);
+    /* volant total ≤ 220°/km */
+    let rot = 0, prev = trk.roadPoint(0).hd;
+    for (let s = 8; s < 300_000; s += 8) {
+      const hd = trk.roadPoint(s).hd;
+      rot += Math.abs(wrap(hd - prev));
+      prev = hd;
+    }
+    const perKm = rot / 300 * 180 / Math.PI;
+    assert.ok(perKm <= 220, `graine ${seed} : volant total ${perKm.toFixed(0)}°/km > 220`);
+  }
+});
+
+test('route V4 : le ψ ne bride pas — cv p95 dans l ordre de grandeur V3', () => {
+  /* le méandre ψ est un offset de cap borné (lat·(2π/L) par composante) :
+     il ne peut pas créer d'épingles. Vérifié EMPIRIQUEMENT : le cv p95
+     par biome (graine 777, 2500 km) reste dans le même ordre de grandeur
+     que la V3 (références mesurées sur le code V3 poussé) — la forêt
+     prend +16 % (ses 'petit' dominaient déjà), les autres ≤ +5 %. */
+  const V3_REF: Record<number, number> = { 0: 0.00626, 1: 0.00881, 2: 0.00526, 3: 0.01857 };
+  const rt = makeRoute(777, 2500);
+  const trk = routeTrack(rt);
+  const stats: Record<number, number[]> = {};
+  for (let s = 16; s < rt.finishS; s += 16) {
+    const b = Math.floor(trk.biomeAt(s));
+    (stats[b] ??= []).push(Math.abs(trk.cvAt(s)));
+  }
+  for (const [b, arr] of Object.entries(stats)) {
+    const sorted = arr.slice().sort((x, y) => x - y);
+    const p95 = sorted[Math.floor(sorted.length * 0.95)]!;
+    const ref = V3_REF[Number(b)]!;
+    assert.ok(p95 <= ref * 1.25,
+      `biome ${b} : cv p95 ${p95.toFixed(5)} > V3 ${ref.toFixed(5)} × 1.25`);
+    assert.ok(p95 >= ref * 0.75,
+      `biome ${b} : cv p95 ${p95.toFixed(5)} < V3 ${ref.toFixed(5)} × 0.75`);
+  }
+});
