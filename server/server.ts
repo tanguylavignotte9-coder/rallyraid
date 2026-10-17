@@ -146,6 +146,8 @@ type PublicCar = {
   abs: number;
   steer: number;
   lat: number;
+  rpm: number;   // tr/min — son + télémétrie (n°24)
+  gear: number;  // 1..6 — télémétrie (n°24)
 };
 
 /* Position réelle de la voiture : point de la chaussée + décalage
@@ -186,6 +188,8 @@ function publicCar(c: RaceCar, i: number): PublicCar {
     abs: c.abs,
     steer: c.steer,
     lat: c.d,
+    rpm: Math.round(c.rpm),   // tr/min — son + télémétrie
+    gear: c.gear + 1,          // 1..6 — télémétrie
   };
 }
 
@@ -657,14 +661,8 @@ const server = http.createServer(async (req, res) => {
           endHours: Math.max(1, Number(body.endHours ?? 24 * 7)),
           survivalHours: Math.max(1, Number(body.survivalHours ?? 24)),
           poiDensity: Math.max(0.2, Math.min(3, Number(body.poiDensity ?? 1))),
-          nightMode: body.nightMode === 'cap' ? 'cap' : 'mul',
-          nightValue: Math.max(0.3, Math.min(1, Number(body.nightValue ?? 0.85))),
-          /* plafond JOUR : un rally raid roule à 170-190 km/h — clamp
-             60-300 pour garder une course crédible */
-          dayCapKmh: Math.max(60, Math.min(300, Number(body.dayCapKmh ?? 190))),
           maxCars: Math.max(2, Math.min(40, Number(body.maxCars ?? 40))),
         };
-        if (body.nightMode === 'cap') cfg.nightValue = Math.min(300, Math.max(30, Number(body.nightValue ?? 110)));
         const fresh = makeRace(cfg);
         /* les comptes restent ; les voitures sont neuves — les joueurs
            devront reconfigurer leur voiture pour la nouvelle course */

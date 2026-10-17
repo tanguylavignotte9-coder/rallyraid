@@ -216,7 +216,34 @@ export function heightAt(r: Road, sTot: number): number {
 
 export const M = 1400; // kg
 export const G = 9.81;
-export const PMAX = 220000; // W — moteur 2× plus puissant (220 kW ≈ 300 ch) ; FMAX (grip des pneus) ne change pas : le départ reste limité par l'adhérence, la pointe et la reprise en haut grimpent
+/* ---- BOÎTE 6 : le régime moteur existe enfin — couple, rapports,
+   passages, limiteur. La voiture n'a plus une courbe de puissance
+   abstraite : elle a un moteur qui monte dans les tours, change de
+   rapport (coupure 0,25 s) et plafonne au rupteur. ---- */
+export const RW = 0.34;          // rayon de roue (m)
+export const FINAL = 3.7;        // pont
+export const RATIOS = [3.6, 2.45, 1.85, 1.43, 1.15, 0.92]; // 1re..6e
+export const RPM_PEAK = 4500;    // couple max (décision Tanguy 2026-10-17)
+export const RPM_MAX = 7000;    // rupteur
+export const RPM_SHIFT_UP = 6400;
+export const RPM_SHIFT_DN = 2400;
+export const TMAX = 400;         // couple max (N·m)
+/* vitesse du rupteur en 6e (référence de gravité contact) */
+export const V_LIM = RPM_MAX / 60 * 2 * Math.PI * RW / (RATIOS[5] * FINAL); // ≈ 73,3 m/s
+
+/* couple roue : T(rpm) × ratio × pont × rendement 0,9 / rayon */
+export function torqueAt(rpm: number): number {
+  /* montée linéaire 0,55@1000 -> 1@RPM_PEAK, plateau jusqu'à 5300,
+     chute -> 0,72@RPM_MAX (rupteur) */
+  if (rpm < 1000) return TMAX * (0.35 + 0.2 * rpm / 1000);
+  if (rpm < RPM_PEAK) return TMAX * (0.55 + 0.45 * (rpm - 1000) / (RPM_PEAK - 1000));
+  if (rpm < 5300) return TMAX;
+  return TMAX * Math.max(0.72, 1 - (rpm - 5300) * 0.28 / (RPM_MAX - 5300));
+}
+export function rpmOf(gear: number, v: number): number {
+  const r = RATIOS[gear] * FINAL;
+  return v <= 0.01 ? 1000 : Math.max(1000, Math.min(RPM_MAX, v / (2 * Math.PI * RW) * r * 60));
+}
 export const FMAX = 6000; // N (adhérence motrice max)
 export const CDA = 0.39; // traînée aéro
 export const CRR = 0.013; // roulement de base (× crrA du biome)
@@ -245,6 +272,9 @@ export type KinCar = {
   abs: number; // télémétrie : voyant ABS — 1 quand l'ellipse rogne le frein demandé (sans ce dosage, la roue bloquerait)
   steer: number; // télémétrie : saturation de direction −1..+1 (dRate/dRateMax)
   pwr: number; // bridage moteur 0..1 (curseur « Moteur » : 1 = pleine puissance)
+  gear: number;   // 0..5 (1re..6e)
+  rpm: number;    // régime (tr/min) — télémétrie + conso + son
+  shiftT: number; // coupure de passage en cours (s, décrémente)
 };
 
 /* ---- échantillonnage route sans allocation ---- */
@@ -349,7 +379,14 @@ export function speedTarget(r: Track, s: number, vCap: number, f = 0.75): number
    poursuivant quand les deux moteurs sont égaux (curseurs de bridage) */
 export function draftMul(behind: KinCar, front: KinCar): number {
   const ds = front.s - behind.s;
-  if (ds <= 0 || ds > 30 || Math.abs(front.d - behind.d) > 1.9) return 1;
+  const dd = Math.abs(front.d - behind.d);
+  /* v2 (n°24) : le tow ne tombe plus à 1 pile au moment de passer —
+     la fenêtre s'étend à l'entrefer (ds > -CAR_L) et au déport
+     d'attaque (dd jusqu'à 2,5 = CAR_D + marge agressif n°19). Le
+     rupteur borne le gain de vitesse (physique : le moteur ne peut
+     pas dépasser le régime), l'aspiration agit par la traînée. */
+  if (ds > 30 || ds <= -CAR_L || dd > 2.5) return 1;
+  if (ds <= 0) return 0.70;   /* côte à côte : sillage plein */
   return 1 - 0.3 * (1 - ds / 30);
 }
 
@@ -376,7 +413,18 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
   const latG = cv > 1e-5 && mu > 0 ? (c.v * c.v * cv) / (mu * G) : 0;
   const kLong = Math.sqrt(Math.max(0, 1 - Math.min(latG, 0.98) ** 2));
   const FBud = Math.max(mu * M * G, 1);
-  const FEng = (PMAX * c.pwr) / Math.max(c.v, 4);
+  /* BOÎTE 6 : régime réel, passages de vitesse, rupteur progressif.
+     Pure fonction de (gear, v) -> déterministe (ADR 0004), replays
+     identiques. Coupure 0,25 s au passage ; le rupteur coupe en douceur
+     sur les 200 derniers tr/min (pas de cognement du flux 15 Hz). */
+  const rpmRaw = c.v <= 0.01 ? 1000 : Math.max(1000, c.v / (2 * Math.PI * RW) * (RATIOS[c.gear] * FINAL) * 60);
+  c.rpm = Math.min(rpmRaw, RPM_MAX);
+  if (c.shiftT > 0) c.shiftT -= dt;
+  else if (c.gear < 5 && (c.rpm >= RPM_SHIFT_UP || (c.rpm >= 5500 && rpmOf(c.gear + 1, c.v) >= 3200))) { c.gear++; c.shiftT = 0.25; }
+  else if (c.gear > 0 && c.rpm <= RPM_SHIFT_DN) { c.gear--; c.shiftT = 0.25; }
+  c.rpm = rpmOf(c.gear, c.v);
+  const lim = Math.max(0, Math.min(1, 1 - (rpmRaw - (RPM_MAX - 200)) / 200));
+  const FEng = c.shiftT > 0 ? 0 : torqueAt(c.rpm) * RATIOS[c.gear] * FINAL * 0.9 / RW * c.pwr * lim;
   let lonG = 0; // part du budget grippée par le gaz ou le frein
   c.brkCmd = 0;
   c.abs = 0;
@@ -544,7 +592,7 @@ export const RV_STATE = ["chasse", "attaque", "devant", "recadrage"];
 
 export function makeRival(seed: number, s: number, v: number): Rival {
   return {
-    s, v, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0, acc: 0, steer: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, pwr: 1,
+    s, v, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0, acc: 0, steer: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, pwr: 1, gear: 0, rpm: 1000, shiftT: 0,
     on: false, st: 0, t: 0, side: 1, apexS: -1, won: false,
     tries: 0, wins: 0, msg: "", msgT: 0,
   };
@@ -562,7 +610,7 @@ export function makeGame(seed: number): Game {
   return {
     road,
     trk: trackOf(road),
-    pl: { s: 500, v: 0, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0, acc: 0, steer: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, pwr: 1 },
+    pl: { s: 500, v: 0, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0, acc: 0, steer: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, pwr: 1, gear: 0, rpm: 1000, shiftT: 0 },
     rv: makeRival(seed * 7919 + 13, 350, 0),
   };
 }

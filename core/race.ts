@@ -20,7 +20,7 @@
 */
 import {
   speedTarget, driveStep, lateralStep, cosmeticsStep, raceLineTarget, draftMul,
-  DT, CAR_L, CAR_D, mulberry32,
+  DT, CAR_L, CAR_D, V_LIM, FLAT, RW, FINAL, RATIOS, mulberry32,
   type KinCar,
 } from './engine.ts';
 import {
@@ -28,15 +28,12 @@ import {
 } from './route.ts';
 
 export const TANK_L = 520;
-export const FUEL_BASE_LPS = 0.02;   // conso de croisière à curseur 0
-export const FUEL_PWR_LPS = 0.08;    // conso ajoutée par unité de curseur
+export const FUEL_K1 = 0.0025;   // L/s par 1000 tr/min (moteur qui tourne)
+export const FUEL_K2 = 0.0137;   // L/s par (pédale × 1000 tr/min) (charge)
 export const FUEL_IDLE_LPS = 0.00035; // moteur tournant à l'arrêt
 export const V_CAP = 32;             // échelle de stress de contact (m/s) —
-                                    // PLUS le plafond pilote : voir dayCapKmh
-export const NIGHT_CAP = 0.85;        // bride 22 h → 6 h (Paris)
-export const FATIGUE_SOFT_H = 14;    // début de la dégradation
+                                    // PLUS le plafond pilote (n°24 : boîte 6)
 export const FATIGUE_EMERG_H = 30;   // arrêt de survie en bord de route
-export const FATIGUE_FLOOR = 0.6;    // vitesse max résiduelle à fond de fatigue
 export const REFUEL_MIN = 12;
 export const REPAIR_MIN = 30;
 export const DRY_ASSIST_MIN = 120;    // panne sèche : assistance lente
@@ -144,12 +141,6 @@ export const CB_MIN_INTERVAL_S = 5;     // anti-flood par équipe
    condition réelle »). ---- */
 export const MAX_CARS = 40;          // grille : premiers arrivés
 export const SURVIVAL_DEFAULT_H = 24; // arrêt de survie sans connexion (h)
-export const NIGHT_MODE_MUL = 'mul';  // 'mul' : multiplicateur · 'cap' : plafond km/h
-export const NIGHT_MODE_CAP = 'cap';
-export const NIGHT_CAP_KMH = 110;    // plafond nuit si mode 'cap'
-
-export type NightMode = 'mul' | 'cap';
-
 export type RaceConfig = {
   seed: number;
   totalKm: number;
@@ -159,11 +150,6 @@ export type RaceConfig = {
   endHours: number;         // durée de course si endType = 'duration'
   survivalHours: number;    // sans connexion → arrêt au POI (arrêt de survie)
   poiDensity: number;       // multiplicateur de densité des POI (1 = nominal)
-  nightMode: NightMode;     // forme de la bride de nuit
-  nightValue: number;       // ×0,85 en mode mul, km/h en mode cap
-  dayCapKmh: number;        // plafond JOUR en km/h (un rally raid roule
-                            // à 170-190, pas 115 — l'ancien V_CAP
-                            // bridait la course à 115,2 km/h)
   maxCars: number;
 };
 
@@ -178,9 +164,6 @@ export const DEFAULT_CONFIG: RaceConfig = {
   endHours: 24 * 7,
   survivalHours: SURVIVAL_DEFAULT_H,
   poiDensity: 1,
-  nightMode: NIGHT_MODE_MUL,
-  nightValue: NIGHT_CAP,
-  dayCapKmh: 190,
   maxCars: MAX_CARS,
 };
 
@@ -285,6 +268,7 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
     id, name, color,
     s: gridS, v: 0, d: 0, dSm: 0, dRate: 0, roll: 0, pitch: 0,
     acc: 0, thr: 0, brkCmd: 0, grip: 0, abs: 0, steer: 0, pwr: 1,
+    gear: 0, rpm: 1000, shiftT: 0,
     fuel: TANK_L, fatigue: 0,
     st: 'run', stopKind: null, stopUntil: 0, stopHours: 0, targetS: null,
     plan: defaultPlan(id),
@@ -383,27 +367,6 @@ function carTrack(race: Race, car: RaceCar): RouteTrack {
     ...trk,
     muAt: (s: number) => trk.muAt(s) * f,
   };
-}
-
-/* bride de nuit — FORME paramétrable (admin) : multiplicateur ×0,85 ou
-   plafond km/h ; la fenêtre 22 h → 6 h (Paris) ne change pas */
-function nightCap(race: Race, hour: number): number {
-  const night = hour >= 22 || hour < 6;
-  /* PLAFOND JOUR PARAMÉTRABLE : ?? 190 en DÉFENSE — un race-state.json
-     sérialisé AVANT ce champ n'a pas la valeur (deserializeRace fait
-     {...DEFAULT_CONFIG, ...d.config} mais restons robustes) */
-  const dayCap = ((race.config.dayCapKmh ?? 190) / 3.6);
-  if (!night) return dayCap;
-  if (race.config.nightMode === NIGHT_MODE_CAP) {
-    return Math.min(dayCap, race.config.nightValue / 3.6);
-  }
-  return dayCap * race.config.nightValue;
-}
-
-function fatigueMul(fatigue: number): number {
-  if (fatigue <= FATIGUE_SOFT_H) return 1;
-  const k = Math.min(1, (fatigue - FATIGUE_SOFT_H) / (FATIGUE_EMERG_H - FATIGUE_SOFT_H));
-  return 1 - (1 - FATIGUE_FLOOR) * k;
 }
 
 function poiDuration(car: RaceCar): number {
@@ -618,9 +581,12 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   car.pwr = car.plan.power;
   evalPlan(race, car);
 
-  const cap = nightCap(race, hour) * fatigueMul(car.fatigue);
+  /* n°24 : PLUS DE PLAFOND — la vitesse est purement physique
+     (chaîne de freinage inductive + boîte 6 + rupteur). La fatigue ne
+     bride plus la vitesse (l'arrêt de survie 30 h reste) ; la nuit
+     reste la nuit pour le rendu et la gravité de contact. */
   const draft = front ? draftMul(car, front) : 1;
-  let vT = speedTarget(trk, car.s, cap, 0.75);
+  let vT = speedTarget(trk, car.s, FLAT, 0.75);
   /* SUIVI ANTICIPATIF + DUEL CÔTÉ LIBRE — la décision se prend AVANT
      driveStep (elle ne dépend que de front.d/hwDuel/gap/car.v) :
      - côté d'attaque : on essaie d'abord le côté OPPOSÉ à celui où
@@ -670,7 +636,13 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   car.s += car.v * dt;
 
   car.fatigue += dt / 3600;
-  car.fuel = Math.max(0, car.fuel - (FUEL_IDLE_LPS + (FUEL_BASE_LPS + FUEL_PWR_LPS * car.pwr) * car.thr) * dt);
+  /* CONSO RÉGIME : L/s = ralenti + moteur qui tourne + charge.
+     Le curseur pwr ne multiplie plus la formule : il agit PAR LA
+     PHYSIQUE (moins de couple -> plus de pédale à v égale -> plus de
+     conso). Calibrée sur banc route réelle : plaine ~131 L/100 km
+     (autonomie 520 L ≈ 398 km), forêt ~130, aspiration −9 % à v égale. */
+  car.fuel = Math.max(0, car.fuel - (FUEL_IDLE_LPS
+    + (FUEL_K1 * car.rpm / 1000 + FUEL_K2 * car.thr * car.rpm / 1000)) * dt);
 
   /* USURE DES GOMMES : proportionnelle au grip sollicité (cercle de
      friction — la gomme travaille) × facteur d'usure du type monté */
@@ -699,7 +671,9 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   /* BUDGET — bonus de régularité (moitié) : rythme de croisière stable =
      vitesse qui ne s'écarte pas de plus de REG_SPEED_BAND m/s de la
      consigne ; l'absence d'incident (moitié) se lit sur car.incidents */
-  const stable = Math.abs(car.v - cap) < REG_SPEED_BAND && car.v > 5;
+  /* régularité : la consigne de croisière est la vitesse EFFECTIVE
+     stable (n°24 : plus de cap — la référence est la vitesse tenue) */
+  const stable = car.thr > 0.15 && car.thr < 0.98 && Math.abs(car.acc) < 0.6 && car.v > 5;
   car.regTimer = stable ? car.regTimer + dt : 0;
 
   if (car.s >= trk.finishS) {
@@ -721,10 +695,9 @@ function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: nu
   const stress = Math.min(1,
     attacker.fatigue / FATIGUE_EMERG_H * 0.5
     + (night ? 0.2 : 0)
-    /* V_CAP (32 m/s = 115 km/h) était l'ancien plafond pilote ; au
-       plafond jour 190 le terme était saturé en permanence et ne
-       modulait plus la gravité. */
-    + Math.min(0.3, attacker.v / ((race.config.dayCapKmh ?? 190) / 3.6) * 0.3));
+    /* V_LIM (rupteur 6e ≈ 73,3 m/s = 264 km/h) est la référence
+       physique : le terme module la gravité sur toute la plage. */
+    + Math.min(0.3, attacker.v / V_LIM * 0.3));
   const heavy = race.rng() < CONTACT_SEV_HEAVY + stress * 0.2;
 
   /* attribution de la faute — règlement acté (vision.md) :
@@ -945,7 +918,24 @@ export function deserializeRace(raw: string): Race {
   const calls = d.rngCalls ?? 0;
   for (let i = 0; i < calls; i++) race.rng();
   race.endSimT = d.endSimT ?? Infinity;
-  race.cars = d.cars.map((c) => ({ ...c })) as RaceCar[];
+  race.cars = d.cars.map((c) => {
+    const car = { ...c } as RaceCar;
+    /* état sérialisé AVANT la boîte (n°24) : la clé gear manque — on
+       dérive le rapport plausible (le plus haut g tel que rpmOf(g, v)
+       >= 2500, sinon 0) et la logique de vitesse se stabilise
+       d'elle-même en quelques pas */
+    if (car.gear === undefined || car.gear === null) {
+      let g = 0;
+      for (let q = 5; q >= 0; q--) {
+        const r = RATIOS[q] * FINAL;
+        if (car.v / (2 * Math.PI * RW) * r * 60 >= 2500) { g = q; break; }
+      }
+      car.gear = g;
+      car.rpm = 1000;
+      car.shiftT = 0;
+    }
+    return car;
+  }) as RaceCar[];
   planIdNext = Math.max(planIdNext, d.nextPlanId ?? 1000);
   return race;
 }
@@ -967,6 +957,6 @@ export function setPlan(car: RaceCar, plan: Plan) {
 }
 
 export const RACE_CONST = {
-  TANK_L, V_CAP, NIGHT_CAP, FATIGUE_SOFT_H, FATIGUE_EMERG_H,
+  TANK_L, V_CAP, V_LIM, FUEL_K1, FUEL_K2, FATIGUE_EMERG_H,
   REFUEL_MIN, REPAIR_MIN, DRY_ASSIST_MIN,
 };

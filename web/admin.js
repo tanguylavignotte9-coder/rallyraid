@@ -104,9 +104,6 @@ async function loadRace() {
   $('cfgEndHours').value = c.endHours;
   $('cfgSurvival').value = c.survivalHours;
   $('cfgPoi').value = c.poiDensity;
-  $('cfgNightMode').value = c.nightMode;
-  $('cfgNightValue').value = c.nightValue;
-  $('cfgDayCap').value = c.dayCapKmh ?? 190;   /* défense : état sérialisé avant le champ */
   $('cfgMaxCars').value = c.maxCars;
   $('racePhase').textContent = d.phase;
   $('raceCars').textContent = d.cars;
@@ -116,13 +113,6 @@ async function loadRace() {
 
 $('cfgEnd').onchange = () => {
   $('cfgEndHours').disabled = $('cfgEnd').value !== 'duration';
-};
-$('cfgNightMode').onchange = () => {
-  if ($('cfgNightMode').value === 'cap') {
-    $('cfgNightValue').value = 110;
-  } else {
-    $('cfgNightValue').value = 0.85;
-  }
 };
 
 $('resetForm').addEventListener('submit', async (e) => {
@@ -137,9 +127,6 @@ $('resetForm').addEventListener('submit', async (e) => {
     endHours: Number($('cfgEndHours').value),
     survivalHours: Number($('cfgSurvival').value),
     poiDensity: Number($('cfgPoi').value),
-    nightMode: $('cfgNightMode').value,
-    nightValue: Number($('cfgNightValue').value),
-    dayCapKmh: Number($('cfgDayCap').value),
     maxCars: Number($('cfgMaxCars').value),
   };
   /* date sûre : un champ vide/invalide faisait JETER une exception à

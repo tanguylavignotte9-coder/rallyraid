@@ -190,15 +190,16 @@ test('course : fin par durée — tous classés au kilomètre atteint', () => {
   assert.ok(race.cars.every((c) => c.finishedAt !== null));
 });
 
-test('course : bride de nuit — plafond km/h (mode cap)', () => {
-  // départ à 23 h UTC = 1 h du matin Paris (heure d'été) : pleine nuit
-  const nightEpoch = Date.UTC(2026, 9, 14, 23, 0, 0);
-  const race = makeRace(cfg(43, 200, { nightMode: 'cap', nightValue: 90, startEpochMs: nightEpoch }));
-  race.departed = true;
-  const c = addCar(race, 'A', '#111111');
-  run(race, 600);
-  assert.ok(c.v * 3.6 <= 91, `vitesse respecte le plafond nuit : ${(c.v * 3.6).toFixed(0)} km/h`);
-  assert.ok(c.v * 3.6 > 10, 'la voiture roule (bridée mais pas bloquée)');
+test('course : n°24 — PLUS DE PLAFOND, la physique seule limite la vitesse', () => {
+  /* le plafond jour/nuit a disparu (décision Tanguy 2026-10-17) :
+     la vitesse est la chaîne de freinage + la boîte 6 + le rupteur.
+     Sur une longue droite la voiture DOIT dépasser 200 km/h. */
+  const race = race2cars(43, { totalKm: 200 });
+  const c = race.cars[0]!;
+  run(race, 120);   // 2 min : atteint le régime de croisière plaine
+  assert.ok(c.v * 3.6 > 140, `la voiture est lancée : ${(c.v * 3.6).toFixed(0)} km/h`);
+  assert.ok(c.gear >= 3, `boîte engagée : ${c.gear + 1}e`);
+  assert.ok(c.rpm > 2000, `régime réel : ${c.rpm.toFixed(0)} tr/min`);
 });
 
 /* ============ Le sel de la course : contacts, budget, gommes ============ */

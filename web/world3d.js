@@ -92,6 +92,82 @@ function terrainRamp(j) { return Math.min(1, j / 12); }
    altitude */
 const BIOME_FOG_RANGE = [[300, 2400], [120, 1400], [200, 3000], [150, 1800]];
 
+/* ---- SON MOTEUR (n°24) : WebAudio, une voix par voiture visible.
+   Oscillateur en dents de scie (fréquence = rpm/60 × 4 explosions/tour
+   d'un V8 : 67 Hz au ralenti, ~450 Hz au rupteur) + sous-oscillateur à
+   moitié de fréquence (le corps grave) + passe-bas 900 Hz. Gain = pédale
+   × atténuation en distance². Lissé par setTargetAtTime (τ 0,06 s) —
+   le flux 15 Hz ne fait jamais sauter l'oreille. AudioContext créé au
+   PREMIER GESTE utilisateur (règle navigateur), muetable à tout moment.
+   Le son ne lit QUE le flux 15 Hz — aucun effet sur la simulation. */
+let ac = null, master = null, muted = false;
+const voices = new Map();          // carId -> {osc, sub, filt, gain}
+function ensureAudio() {
+  if (ac) return;
+  ac = new (window.AudioContext || window.webkitAudioContext)();
+  master = ac.createGain();
+  master.gain.value = muted ? 0 : 0.5;
+  master.connect(ac.destination);
+  ac.resume();
+}
+document.addEventListener('pointerdown', () => ensureAudio(), { once: true, capture: true });
+document.addEventListener('keydown', () => ensureAudio(), { once: true, capture: true });
+
+export function setMuted(m) { muted = m; if (master) master.gain.setTargetAtTime(m ? 0 : 0.5, ac.currentTime, 0.05); }
+export function isMuted() { return muted; }
+
+/* voix par voiture : dents de scie + sous-oscillateur + passe-bas */
+function makeVoice() {
+  const osc = ac.createOscillator();
+  osc.type = 'sawtooth';
+  const sub = ac.createOscillator();
+  sub.type = 'sawtooth';
+  const filt = ac.createBiquadFilter();
+  filt.type = 'lowpass';
+  filt.frequency.value = 900;
+  const gain = ac.createGain();
+  gain.gain.value = 0;
+  osc.connect(filt); sub.connect(filt); filt.connect(gain); gain.connect(master);
+  osc.start(); sub.start();
+  return { osc, sub, filt, gain };
+}
+
+/* appelé chaque frame : met à jour les 8 voix les plus proches */
+function updateEngineAudio() {
+  if (!ac) return;
+  /* les 8 voitures les plus proches de la caméra */
+  const near = [];
+  for (const [id, m] of carMeshes) {
+    if (!m.tgt || m.rx === undefined) continue;
+    const dist = Math.hypot(m.rx - camera.position.x, m.rz - camera.position.z);
+    near.push([id, m, dist]);
+  }
+  near.sort((a, b) => a[2] - b[2]);
+  const keep = new Set();
+  for (let i = 0; i < Math.min(8, near.length); i++) {
+    const [id, m, dist] = near[i];
+    keep.add(id);
+    let v = voices.get(id);
+    if (!v) { v = makeVoice(); voices.set(id, v); }
+    const rpm = m.rpm ?? 0;
+    const thr = m.thrS ?? 0;
+    const f = Math.max(30, rpm / 60 * 4);       // 4 explosions/tour
+    v.osc.frequency.setTargetAtTime(f, ac.currentTime, 0.06);
+    v.sub.frequency.setTargetAtTime(f / 2, ac.currentTime, 0.06);
+    const att = 1 / (1 + (dist / 140) ** 2);    // distance²
+    const g = muted ? 0 : (0.05 + 0.4 * thr) * att;
+    v.gain.gain.setTargetAtTime(g, ac.currentTime, 0.06);
+  }
+  /* voitures sorties du champ : voix coupée */
+  for (const [id, v] of voices) {
+    if (!keep.has(id)) {
+      v.gain.gain.setTargetAtTime(0, ac.currentTime, 0.06);
+      v.osc.stop(); v.sub.stop();
+      voices.delete(id);
+    }
+  }
+}
+
 /* Récupère la voiture publique suivie (ou snap.me si c'est la mienne). */
 function followCar() {
   if (!snap) return null;
@@ -943,8 +1019,10 @@ function syncTargets(d) {
                                             déjà dans le snapshot public) */
       v: (meC ? meC.v : (c.v ?? 0)) / 3.6,
       steer: c.steer ?? 0,   /* braquage des roues avant (télémétrie) */
+      rpm: c.rpm ?? 0,        /* régime moteur — son (n°24) */
       t: performance.now(),   /* la cible est un ÉCHANTILLON d'un mouvement
                                   continu, pas un point d'arrivée */
+      thrS: (c.thr ?? 0),     /* pédale pour le son (lissée par setTargetAtTime) */
     };
     /* premier rendu : sauter sur la cible — pas de lerp depuis
        l'origine (0,0,0), la voiture serait « arrivée en volant » */
@@ -1188,6 +1266,7 @@ function loop() {
   animateCars(dt, now);
   updateCamera(dt);
   updateSky();
+  updateEngineAudio();
   renderer.render(scene, camera);
 }
 
@@ -1256,5 +1335,10 @@ export function dispose() {
   }
   for (const m of carMeshes.values()) scene.remove(m.group);
   carMeshes.clear();
+  /* audio : voix coupées + contexte fermé */
+  for (const v of voices.values()) { try { v.osc.stop(); v.sub.stop(); } catch {} }
+  voices.clear();
+  ac?.close();
+  ac = null; master = null;
   renderer?.dispose();
 }
