@@ -362,8 +362,11 @@ export function buildChunk(rt: Route, k: number): Chunk {
   const WP_WIGGLE_MAX = 1.10;   // borne de magnitude du wiggle (bande ±0,40 + débord)
   const step = new Float64Array(RSAMP);
   const dir = () => (hdDev > 0.40 ? -1 : hdDev < -0.40 ? 1 : rand() < 0.5 ? -1 : 1);
-  const writeCorner = (cvT: number, len: number, sgn: number) => {
+  const writeCorner = (cvT: number, len: number, sgn: number, uBound = 0) => {
     const ramp = 4;
+    /* uBound > 0 = DEMI-TOUR : la borne s'applique à la déflexion de l'ITEM
+       (une épingle = un objet borné en soi) ; sinon borne de POSITION wiggle */
+    let defl = 0;
     /* BORNE DE WIGGLE : la bande dir() agit sur le wiggle TOTAL — un
        item isolé (angle jusqu'à ~1,7 rad) ne doit pas emporter hdDev
        au-delà de la bande, sinon la dérive latérale explose l'enveloppe
@@ -371,9 +374,11 @@ export function buildChunk(rt: Route, k: number): Chunk {
     for (let q = 0; q < len && pi < RSAMP; q++, pi++) {
       const u = Math.min(1, (q + 1) / ramp, (len - q) / ramp);
       const d = sgn * cvT * SEG * u;
-      if (Math.abs(hdDev + d) > WP_WIGGLE_MAX && hdDev * sgn > 0) break;
+      if (uBound > 0 ? Math.abs(defl + d) > uBound
+                     : (Math.abs(hdDev + d) > WP_WIGGLE_MAX && hdDev * sgn > 0)) break;
       step[pi] = d;
       hdDev += d;
+      defl += d;
     }
   };
   const writeStraight = (len: number) => {
@@ -383,9 +388,9 @@ export function buildChunk(rt: Route, k: number): Chunk {
      sagitta 100-400 m), longueur bornée pour ne pas vider le budget micro */
   const writeCourant = (z: number) => {
     const turn = 0.45 + rand() * 0.35;
-    const R = z === 0 ? 700 + rand() * 800
+    const R = z === 0 ? 430 + rand() * 470
           : z === 1 ? 400 + rand() * 350
-          : z === 2 ? 1200 + rand() * 1400
+          : z === 2 ? 560 + rand() * 590
           : 350 + rand() * 300;
     const len = Math.max(60, Math.min(150, Math.round(turn * R / SEG)));
     writeCorner(1 / R, len, dir());
@@ -404,24 +409,37 @@ export function buildChunk(rt: Route, k: number): Chunk {
     let kind: string;
     /* MENUS par biome — V2ter, avec droites resserrées plaine/désert
        pour compenser la longueur mangée par les courants */
-    if (z === 0) kind = u < 0.20 ? 'droite' : u < 0.62 ? 'grand' : u < 0.84 ? 's' : 'angle';
-    else if (z === 1) kind = u < 0.08 ? 'droite' : u < 0.44 ? 'petit' : u < 0.72 ? 's' : u < 0.90 ? 'angle' : 'epingle';
-    else if (z === 2) kind = u < 0.42 ? 'droite' : u < 0.82 ? 'grand' : 'angle';
-    else kind = u < 0.06 ? 'droite' : u < 0.30 ? 'petit' : u < 0.70 ? 's' : 'epingle';
+    if (z === 0) kind = u < 0.10 ? 'droite' : u < 0.30 ? 'grand' : u < 0.54 ? 'petit' : u < 0.80 ? 's' : u < 0.98 ? 'angle' : 'epingle';
+    else if (z === 1) kind = u < 0.08 ? 'droite' : u < 0.46 ? 'petit' : u < 0.74 ? 's' : u < 0.98 ? 'angle' : 'epingle';
+    else if (z === 2) kind = u < 0.42 ? 'droite' : u < 0.62 ? 'grand' : 'angle';
+    else kind = u < 0.06 ? 'droite' : u < 0.26 ? 'petit' : u < 0.50 ? 's' : u < 0.74 ? 'epingle' : 'lacets';
     if (kind === 'droite') {
       /* portion calme → lignes plus LONGUES (×1 à ×1,6) */
       const long = Math.round((z === 2 ? 26 + Math.floor(rand() * 36)
-                                       : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
+                                       : z === 0 ? 8 + Math.floor(rand() * 12)
+                                                 : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
       writeStraight(long);
     }
-    else if (kind === 'grand') writeCorner(1 / (280 + rand() * 280), 12 + Math.floor(rand() * 18), dir());
-    else if (kind === 'petit') writeCorner(1 / (z === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
+    else if (kind === 'grand') writeCorner(1 / (z === 0 ? 150 + rand() * 170 : 145 + rand() * 135), 12 + Math.floor(rand() * 18), dir());
+    else if (kind === 'petit') writeCorner(1 / (z === 0 ? 120 + rand() * 100 : z === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
     else if (kind === 's') {
-      const cvS = 1 / (z === 3 ? 90 + rand() * 70 : 150 + rand() * 130);
+      const cvS = 1 / (z === 3 ? 90 + rand() * 70 : z === 0 ? 120 + rand() * 100 : 150 + rand() * 130);
       const lS = 7 + Math.floor(rand() * 8);
       const sgn = dir(); writeCorner(cvS, lS, sgn); writeCorner(cvS, lS, -sgn);
     } else if (kind === 'angle') writeCorner(1 / (90 + rand() * 90), 14 + Math.floor(rand() * 12), dir());
-    else writeCorner(1 / (30 + rand() * 30), z === 3 ? 8 + Math.floor(rand() * 10) : 6 + Math.floor(rand() * 8), dir());
+    else if (kind === 'lacets') {
+      const n = 2 + Math.floor(rand() * 2);        // 2-3 épingles en enfilade
+      let last = dir();
+      for (let u0 = 0; u0 < n && pi < RSAMP - 30; u0++) {
+        const R = 25 + rand() * 15;                // 25-40 m — l'apex à ~55-65 km/h
+        const tgt = 2.45 + rand() * 0.7;
+        const len = Math.ceil(tgt * R / SEG) + 4;  // 140-180° + les rampes
+        writeCorner(1 / R, len, last, tgt);
+        last = -last;                              // alternance gauche/droite
+        if (u0 < n - 1) writeStraight(4 + Math.floor(rand() * 8));  // 32-96 m entre épingles
+      }
+    }
+    else writeCorner(1 / (28 + rand() * 22), z === 3 ? 11 + Math.floor(rand() * 11) : 9 + Math.floor(rand() * 9), dir(), 2.45 + rand() * 0.7);
   }
   writeStraight(RSAMP - pi);
 

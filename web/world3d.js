@@ -309,16 +309,24 @@ function buildRoad(group, d) {
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
     const w = p.w;
     const halfRoad = w;
-    /* jupe terre qui RECOUVRE la 1re rangée du terrain (w + 2) :
-       recouvrement de 0,5 m — plus jamais de fissure visible */
-    const halfDirt = w + 2.5;
-    pos.push(p.x + nx * -halfDirt, p.z + 0.02, p.y + nz * -halfDirt);
+    /* n°31 — COUTURE EXACTE : le bord externe de la jupe passe à w + 2
+       (même latéral que la 1re rangée du terrain) et prend le y EXACT
+       de terrainY(p, i, w + 2) — la même technique que l'anneau 0 de
+       la bande L1. terrainRamp(0) = 0 : la rangée terrain n'a AUCUN
+       jitter à j = 0, l'arête coïncide exactement. Le fondu d'écart
+       (|gap| 15-25 m) est suivi par la jupe : le trou « on voit à
+       travers la carte » disparaît. PONTS (p.seg === 1) exceptés :
+       deck + ravin VOUlus — la jupe reste plate à p.z + 0.02
+       (arches dessous, terrain qui s'ouvre). */
+    const halfDirt = w + 2;
+    const dirtY = p.seg === 1 ? p.z + 0.02 : terrainY(p, i, halfDirt);
+    pos.push(p.x + nx * -halfDirt, dirtY, p.y + nz * -halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
     pos.push(p.x + nx * -halfRoad, p.z + 0.05, p.y + nz * -halfRoad);
     col.push(roadCol.r, roadCol.g, roadCol.b);
     pos.push(p.x + nx * halfRoad, p.z + 0.05, p.y + nz * halfRoad);
     col.push(roadCol.r, roadCol.g, roadCol.b);
-    pos.push(p.x + nx * halfDirt, p.z + 0.02, p.y + nz * halfDirt);
+    pos.push(p.x + nx * halfDirt, dirtY, p.y + nz * halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
   }
   /* 4 sommets par point → 3 quads → 6 triangles, en sens ANTIHORAIRE

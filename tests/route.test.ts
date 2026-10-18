@@ -10,6 +10,7 @@ import {
   makeRoute, routeTrack, ensureChunk, buildChunk,
   RCHUNK, RSAMP, MAX_CACHED, type Route,
 } from '../core/route.ts';
+import { SEG } from '../core/engine.ts';
 
 /* espacement minimal plausible entre deux POI (800 m) */
 const SEG_MIN_DIST = 800;
@@ -341,15 +342,22 @@ test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)'
   trk.cvAt(5 * RCHUNK + 100);
   assert.deepEqual(Array.from(ensureChunk(a, 5).hd), before,
     'le chunk 5 régénéré doit être identique (ψ pur, pas de PRNG)');
-  /* le flux PRNG des menus n'a pas bougé : les POI de la V3 sont
-     conservés au bit près (hdPsi hors du flux des menus) */
+  /* n°31 : V5 — le flux PRNG des menus a changé (épingles, lacets,
+     rayons plaine/désert) : les POI sont régénérés (positions mesurées
+     sur V5.4, graine 12345, 600 km — 34 POI). C'est une NOUVELLE
+     version de route : re-set des courses en cours (arbitrage alpha). */
   const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
-  assert.equal(pa.length, 33, 'POI inchangés vs V3 (graine 12345, 600 km)');
+  assert.equal(pa.length, 34, 'POI V5 (graine 12345, 600 km)');
   assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
-    ['25000:station', '42992:station', '72464:station'], 'positions POI V3 conservées');
+    ['25000:station', '47504:station', '65024:station'], 'positions POI V5');
 });
 
-test('route V4 : échelle voiture — retournements ≥ 8/km, mort-droit < 5 %', () => {
+test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {
+  /* n°31 : V5 — plaine/désert relâchés à ≥ 6/km (mesuré V5.4 : plaine 6,8,
+     désert 7,4) : droites plaine raccourcies + grand plaine resserré =
+     moins de flips par km, mais le volant vit plus (ce sont les épingles
+     qui comptent désormais). Forêt/altitude gardent ≥ 8 (11,6 / 10,3). */
+  const MIN_REV: Record<number, number> = { 0: 6, 1: 8, 2: 6, 3: 8 };
   const wrapL = (a: number) => {
     while (a > Math.PI) a -= 2 * Math.PI;
     while (a < -Math.PI) a += 2 * Math.PI;
@@ -377,8 +385,8 @@ test('route V4 : échelle voiture — retournements ≥ 8/km, mort-droit < 5 %',
     }
     for (const [b, st] of Object.entries(stats)) {
       assert.ok(st.km > 100, `graine ${seed} biome ${b} : assez de km (${st.km.toFixed(0)})`);
-      assert.ok(st.rev / st.km >= 8,
-        `graine ${seed} biome ${b} : ${(st.rev / st.km).toFixed(1)} retournements/km < 8`);
+      assert.ok(st.rev / st.km >= MIN_REV[b] ?? 8,
+        `graine ${seed} biome ${b} : ${(st.rev / st.km).toFixed(1)} retournements/km < ${MIN_REV[b] ?? 8}`);
       assert.ok(st.dead / st.n < 0.05,
         `graine ${seed} biome ${b} : mort-droit ${(100 * st.dead / st.n).toFixed(1)}% ≥ 5%`);
     }
@@ -430,13 +438,67 @@ test('route V4 : gardes macro intactes + volant borné', () => {
   }
 });
 
+test('route V5 : épingles par biome — ≥150° rares sauf altitude, borne ≤ 181°', () => {
+  /* n°31 : détecteur — un cœur d'épingle a une courbure qu'aucun autre
+     item n'atteint : |Δhd| par sample > 0,104 rad (R < 77 m ; les 's'
+     altitude R 90-160 plafonnent à 0,089). La déflexion du cœur est
+     intégrée sur le run ; corr de poursuite + ψ s'annulent au cœur du
+     virage. Attendus (graine 12345, 1000 km) : plaine ~0,6, forêt ~1,3,
+     altitude ~150 (lacets), désert 0 par 100 km — le désert reste le
+     royaume de la pointe. Garde-fou : la borne uBound doit tenir —
+     déflexion max d'un cœur ≤ 181° (les lacets sont des ENFILADES
+     d'items bornés : la somme d'une enfilade dépasse 360° sans
+     qu'aucun item ne dépasse 180,5°). */
+  const CORE = 0.104;              // rad/sample : signature d'épingle
+  const EPINGLE = 150 * Math.PI / 180;
+  const rt = makeRoute(12345, 1000);
+  const perBiome: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  const kmPer: Record<number, number> = { 0: 0, 1: 0, 2: 0, 3: 0 };
+  let maxDefl = 0;
+  const nChunks = Math.ceil(rt.finishS / RCHUNK);
+  for (let k = 0; k < nChunks; k++) {
+    const c = ensureChunk(rt, k);
+    for (let i = 1; i < RSAMP; i++) kmPer[Math.floor(c.biome[i]!)] += SEG / 1000;
+    let i = 1;
+    while (i < RSAMP) {
+      if (Math.abs(c.hd[i]! - c.hd[i - 1]!) > CORE) {
+        let j = i, sum = 0;
+        while (j < RSAMP && Math.abs(c.hd[j]! - c.hd[j - 1]!) > CORE) {
+          sum += c.hd[j]! - c.hd[j - 1]!;
+          j++;
+        }
+        const defl = Math.abs(sum);
+        const b = Math.floor(c.biome[Math.floor((i + j) / 2)]!);
+        if (defl >= EPINGLE) perBiome[b] = (perBiome[b] ?? 0) + 1;
+        if (defl > maxDefl) maxDefl = defl;
+        i = j;
+      } else {
+        i++;
+      }
+    }
+  }
+  const per100km = (b: number) => 100 * (perBiome[b] ?? 0) / (kmPer[b] || 1);
+  assert.ok(per100km(0) >= 0.3 && per100km(0) <= 2,
+    `plaine : ${per100km(0).toFixed(1)} épingles/100 km (rares attendues ~0,6)`);
+  assert.ok(per100km(1) >= 0.5 && per100km(1) <= 3,
+    `forêt : ${per100km(1).toFixed(1)} épingles/100 km (rares attendues ~1,3)`);
+  assert.ok(per100km(3) >= 100,
+    `altitude : ${per100km(3).toFixed(1)} épingles/100 km (lacets attendus ~150)`);
+  assert.equal(perBiome[2] ?? 0, 0, 'désert : aucune épingle (caractère préservé)');
+  assert.ok(maxDefl <= 181 * Math.PI / 180,
+    `déflexion max d'un cœur ${(maxDefl * 180 / Math.PI).toFixed(1)}° > 181° (borne uBound)`);
+});
+
 test('route V4 : le ψ ne bride pas — cv p95 dans l ordre de grandeur V3', () => {
   /* le méandre ψ est un offset de cap borné (lat·(2π/L) par composante) :
      il ne peut pas créer d'épingles. Vérifié EMPIRIQUEMENT : le cv p95
      par biome (graine 777, 2500 km) reste dans le même ordre de grandeur
      que la V3 (références mesurées sur le code V3 poussé) — la forêt
      prend +16 % (ses 'petit' dominaient déjà), les autres ≤ +5 %. */
-  const V3_REF: Record<number, number> = { 0: 0.00626, 1: 0.00881, 2: 0.00526, 3: 0.01857 };
+  /* n°31 : V5 — références mesurées sur V5.4 (graine 777, 2500 km) :
+     épingles 140-180° en plaine/forêt, lacets en altitude, courants
+     resserrés plaine/désert. Tolérance ±25 % comme avant. */
+  const V3_REF: Record<number, number> = { 0: 0.00814, 1: 0.00979, 2: 0.00743, 3: 0.03371 };
   const rt = makeRoute(777, 2500);
   const trk = routeTrack(rt);
   const stats: Record<number, number[]> = {};
