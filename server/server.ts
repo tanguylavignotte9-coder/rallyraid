@@ -132,6 +132,8 @@ type PublicCar = {
   id: number; rank: number; name: string; color: string;
   km: number; v: number; st: string; stopKind: string | null;
   configured: boolean;
+  survivalStop: boolean;   // n°29 : figé jusqu'à reconnexion (étiquette dédiée)
+  autoCreated: boolean;    // n°29 : était envoyé mais non déclaré (dérive de type)
   pos3: { x: number; y: number; z: number };
   hd: number;
   d: number;
@@ -176,6 +178,7 @@ function publicCar(c: RaceCar, i: number): PublicCar {
     id: c.id, rank: i + 1, name: c.name, color: c.color,
     km: c.s / 1000, v: c.v * 3.6, st: c.st, stopKind: c.stopKind,
     configured: c.owner !== null,
+    survivalStop: c.survivalStop,
     autoCreated: c.autoCreated,
     pos3: { x: p.x, y: p.y, z: race.trk.heightAt(c.s) },
     hd: p.hd,
@@ -443,6 +446,9 @@ const server = http.createServer(async (req, res) => {
       const body = JSON.parse(await readBody(req)) as { name?: string; color?: string; tire?: TireKind };
       const name = (body.name ?? '').trim().slice(0, 20);
       if (name.length < 2) { sendJSON(res, 400, { error: 'nom d\'équipe trop court' }); return; }
+      /* n°29 : pas de HTML dans un nom d'équipe (rendu chez les autres
+         joueurs — barrière serveur en plus de l'échappement client) */
+      if (/[<>]/.test(name)) { sendJSON(res, 400, { error: 'caractères interdits dans le nom d\'équipe' }); return; }
       if (body.tire && !(body.tire in TIRES)) { sendJSON(res, 400, { error: 'gommes inconnues' }); return; }
       if (!personalizing && race.cars.length >= race.config.maxCars) { sendJSON(res, 400, { error: 'grille complète' }); return; }
       let color = body.color ?? '';

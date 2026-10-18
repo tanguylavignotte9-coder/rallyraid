@@ -160,7 +160,10 @@ test('course : déroulé — préparation puis course', () => {
 });
 
 test('course : arrêt de survie — stop sans connexion, repart à la reconnexion', () => {
-  const race = race2cars(37, { survivalHours: 1 });
+  /* n°29 : la course est longue (la rivale ne finit PAS pendant le
+     test) — depuis le n°29, une voiture figée-survie + tout le reste
+     arrivé CLÔT la course (la voiture figée est classée au km) */
+  const race = race2cars(37, { survivalHours: 1, totalKm: 2000 });
   const c = race.cars[0]!;
   c.owner = 'joueurA';
   run(race, 60);

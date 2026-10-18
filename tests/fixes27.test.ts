@@ -89,8 +89,13 @@ test('27 : garage fonctionnel de bout en bout (gommes + usure + crevaison)', () 
 });
 
 test('27 : survie + panne seche pendant le trajet — plus de gel permanent', () => {
-  const race = race1(205, { survivalHours: 1 });
+  /* n°29 : une DEUXIÈME voiture roule (course longue) — depuis le
+     n°29 une seule voiture figée-survie CLÔT la course ; ici on teste
+     le gel, pas la clôture */
+  const race = race1(205, { survivalHours: 1, totalKm: 2000 });
   const c = addCar(race, 'A', '#111111');
+  const other = addCar(race, 'Z', '#999999');
+  void other;
   c.owner = 'toto';
   /* stepRace remet lastSeenSimT a 0 au passage en racing : on amorce
      la course, PUIS on marque le pilote absent */

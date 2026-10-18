@@ -19,6 +19,10 @@ const canvas = $('map');
 const ctx = canvas.getContext('2d');
 const ROAD_W = 7.5;
 const TANK = 520;
+/* n°29 : échappement HTML — noms d'équipe et messages CB sont saisis
+   par des joueurs ; tout ce qui passe par innerHTML est échappé. */
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 let snap = null;
 let me = null;           // compte {user, level, carId}
@@ -105,6 +109,7 @@ function show(id) {
 function stateLabel(c) {
   if (c.st === 'finish') return '🏁 arrivé';
   if (c.st === 'stop') {
+    if (c.survivalStop) return '🛑 survie — pilote absent';
     if (c.stopKind === 'hotel') return '😴 dort à l\'hôtel';
     if (c.stopKind === 'station') return '⛽ ravitaille';
     if (c.stopKind === 'garage') return '🔧 au garage';
@@ -206,7 +211,7 @@ function render() {
     const tr = document.createElement('tr');
     if (me && c.id === me.id) tr.className = 'sel';
     tr.innerHTML = `<td>${c.rank}</td>
-      <td><span class="dot" style="background:${c.color}"></span> ${c.name}</td>
+      <td><span class="dot" style="background:${c.color}"></span> ${esc(c.name)}</td>
       <td class="km">${c.km.toFixed(1)} km</td>
       <td class="mut">${stateLabel(c)}</td>`;
     tb.appendChild(tr);
@@ -225,7 +230,7 @@ function renderEvents(events) {
   ev.innerHTML = '';
   for (const e of [...events].reverse()) {
     const p = document.createElement('p');
-    p.innerHTML = `<b>${fmtClock(e.t)}</b> — ${e.msg}`;
+    p.innerHTML = `<b>${fmtClock(e.t)}</b> — ${esc(e.msg)}`;
     ev.appendChild(p);
   }
   /* bandeau + pastille non-lue JOURNAL : le point ambre marque
@@ -263,11 +268,11 @@ function renderFinish() {
   tb.innerHTML = '';
   for (const c of snap.cars.slice(0, 3)) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${c.rank}</td><td><span class="dot" style="background:${c.color}"></span> ${c.name}</td><td class="km">${c.km.toFixed(1)} km</td>`;
+    tr.innerHTML = `<td>${c.rank}</td><td><span class="dot" style="background:${c.color}"></span> ${esc(c.name)}</td><td class="km">${c.km.toFixed(1)} km</td>`;
     tb.appendChild(tr);
   }
   const sum = $('summary');
-  sum.innerHTML = `<p><b>${me.name}</b> — ${fmtDur(me.finishedAt ?? 0)} de course, ${(me.km).toFixed(1)} km.</p>`;
+  sum.innerHTML = `<p><b>${esc(me.name)}</b> — ${fmtDur(me.finishedAt ?? 0)} de course, ${(me.km).toFixed(1)} km.</p>`;
   for (const e of me.events) {
     const p = document.createElement('p');
     p.textContent = `${fmtClock(e.t)} — ${e.msg}`;
@@ -733,7 +738,7 @@ function renderActions() {
     else if (a.type === 'repair' && a.atKm !== undefined) txt = `Garage au km ${a.atKm}`;
     else if (a.type === 'tires') txt = `Monter des gommes ${a.tire} au prochain garage`;
     else txt = JSON.stringify(a);
-    div.innerHTML = `<span style="flex:1">${txt}</span>`;
+    div.innerHTML = `<span style="flex:1">${esc(txt)}</span>`;
     const del = document.createElement('button');
     del.textContent = '✕';
     del.onclick = () => { draft.actions = draft.actions.filter((x) => x.id !== a.id); renderActions(); };
@@ -770,6 +775,12 @@ $('addTire').onclick = () => {
 
 $('power').oninput = (e) => { draft.power = Number(e.target.value); };
 $('aggr').onchange = (e) => { draft.aggression = e.target.value; };
+/* SON MOTEUR (n°24/n°29) : bouton mute — le handler du n°24 avait été
+   perdu ; sans lui le bouton 🔊 de index.html ne faisait rien. */
+$('soundBtn').onclick = () => {
+  W.setMuted(!W.isMuted());
+  $('soundBtn').textContent = W.isMuted() ? '🔇' : '🔊';
+};
 
 $('savePlan').onclick = async () => {
   const r = await api('/api/plan', {
@@ -810,7 +821,7 @@ async function pollCb() {
       fresh = true;
       const p = document.createElement('p');
       p.dataset.key = key;
-      p.innerHTML = `<b>${m.from} :</b> ${m.msg}`;
+      p.innerHTML = `<b>${esc(m.from)} :</b> ${esc(m.msg)}`;
       box.appendChild(p);
       const b = document.createElement('div');
       b.className = 'flash';

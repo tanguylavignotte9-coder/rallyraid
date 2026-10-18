@@ -11,7 +11,6 @@ import * as W from './world3d.js';
 
 const $ = (id) => document.getElementById(id);
 let snap = null;
-let prev = null;
 
 /* ---- poll 1 s : LA source de vérité (même flux que le stratège) ;
    setData alimente le moteur 3D qui, lui, interpole entre les polls. */
@@ -31,32 +30,15 @@ async function poll() {
     if (!r) return;
     const d = await r.json();
     if (!d.cars?.length) return;
-    prev = snap;
     snap = d;
     $('clock').textContent = d.clock;
     renderCarList();
     W.setData(d);
-    /* bandeau d'événements en direct (même flux que le stratège) */
-    const mine = d.me?.events ?? [];
-    if (prev && mine.length) {
-      const old = prev.me?.events ?? [];
-      for (const e of mine.slice(-4)) {
-        if (!old.some((o) => o.t === e.t && o.msg === e.msg)) flash(e.msg);
-      }
-    }
   } catch { /* silence — le prochain tick réessaie */ } finally {
     pollBusy = false;
   }
 }
 
-function flash(msg) {
-  const b = document.createElement('div');
-  b.className = 'flash';
-  b.textContent = msg;
-  $('flash').prepend(b);
-  setTimeout(() => b.remove(), 8000);
-  while ($('flash').children.length > 4) $('flash').lastChild.remove();
-}
 
 function renderCarList() {
   const sel = $('carSel');

@@ -474,6 +474,25 @@ function endStop(race: Race, car: RaceCar) {
 /* reconnexion du joueur : lève l'arrêt de survie (la voiture repart) */
 export function wakeSurvival(race: Race, car: RaceCar) {
   if (!car.survivalStop) return;
+  /* n°29 : course terminée → la voiture reste classée (elle ne repart
+     pas dans une course finie) */
+  if (race.phase === 'finished') return;
+  /* n°29 : réveil PENDANT une assistance sèche — l'assistance se
+     termine immédiatement (carburant versé), le timer ne repart pas
+     de zéro et la voiture ne retombe pas dry à l'instant */
+  if (car.st === 'stop' && car.stopKind === 'dry') {
+    car.fuel = Math.max(car.fuel, DRY_ASSIST_L);
+    car.survivalStop = false;
+    car.survivalKind = null;
+    car.dryAssisted = false;
+    car.stopKind = null;
+    car.stopUntil = 0;
+    car.st = 'run';
+    car.targetS = null;
+    car.lastSeenSimT = race.simT;
+    log(car, race.simT, `Reconnexion du pilote — assistance terminée (${DRY_ASSIST_L} L) — reprise`);
+    return;
+  }
   car.survivalStop = false;
   car.survivalKind = null;
   car.dryAssisted = false;
@@ -514,7 +533,11 @@ function evalPlan(race: Race, car: RaceCar) {
          réarmé à la connexion ne doit pas détourner l'arrêt en
          cours) ; la règle consommée se réarme à l'actualisation
          suivante du plan, comme les deux autres règles. */
-      if (car.tireWear >= a.threshold && !(car.st === 'toStop' && car.stopKind === 'garage')) {
+      /* n°29 : la garde anti-re-ciblage couvre TOUT arrêt en cours (la
+         version n°28 ne protégeait que le garage — une voiture en route
+         vers sa station pouvait être détournée vers un garage plus
+         loin et rater son plein → panne sèche) */
+      if (car.tireWear >= a.threshold && car.st !== 'toStop') {
         if (engageStop(race, car, 'garage', 0)) acts.splice(i, 1);
         return;
       }
@@ -560,7 +583,9 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   if (car.st === 'stop') {
     car.v = 0;
     car.thr = 0; car.brkCmd = 0;
-    car.fuel = Math.max(0, car.fuel - FUEL_IDLE_LPS * dt);
+    /* n°29 : moteur COUPÉ à l'arrêt (hôtel, survie, garage) — l'ancien
+       ralenti vidait ~30 L/jour une voiture garée, et une survie longue
+       revenait avec un réservoir entamé sans que le joueur ait roulé */
     if (car.stopKind === 'hotel') {
       car.fatigue = Math.max(0, car.fatigue - dt / 3600);
     } else {
@@ -576,9 +601,12 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
       car.s = car.targetS;
       car.v = 0;
       car.stopUntil = car.survivalStop ? Infinity : race.simT + poiDuration(car);
-      if (car.survivalStop) log(car, race.simT, 'ARRÊT DE SURVIE — la voiture dort ici jusqu\'à la reconnexion de son pilote');
-      const label = car.stopKind === 'station' ? 'Ravitaillement' : car.stopKind === 'hotel' ? 'Coucher' : car.stopKind === 'garage' ? 'Au garage' : 'Arrêt';
-      log(car, race.simT, `${label} — arrêt de ${Math.round(poiDuration(car) / 60)} min`);
+      if (car.survivalStop) {
+        log(car, race.simT, 'ARRÊT DE SURVIE — la voiture dort ici jusqu\'à la reconnexion de son pilote');
+      } else {
+        const label = car.stopKind === 'station' ? 'Ravitaillement' : car.stopKind === 'hotel' ? 'Coucher' : car.stopKind === 'garage' ? 'Au garage' : 'Arrêt';
+        log(car, race.simT, `${label} — arrêt de ${Math.round(poiDuration(car) / 60)} min`);
+      }
       return info;
     }
   }
@@ -923,9 +951,22 @@ export function stepRace(race: Race, nSteps: number) {
     resolvePairs(race);
     budgetStep(race, DT);
     bulletinsStep(race);
-    if (!race.finished && race.cars.length > 0 && race.cars.every((c) => c.st === 'finish')) {
+    /* n°29 : une voiture FIGÉE en arrêt de survie (joueur absent) ne
+       doit pas empêcher la course de se terminer — elle est classée au
+       kilomètre atteint (vision : « non-arrivés classés au kilomètre
+       atteint »). Fin = tout le monde arrivé OU figé-survie. */
+    if (!race.finished && race.cars.length > 0 && race.cars.every((c) =>
+      c.st === 'finish' || (c.survivalStop && (c.st === 'stop' || c.st === 'toStop')))) {
       race.finished = true;
       race.phase = 'finished';
+      for (const c of race.cars) {
+        if (c.st !== 'finish') {
+          c.st = 'finish';
+          c.v = 0;
+          c.finishedAt = race.simT;
+          log(c, race.simT, 'Fin de course — classé au kilomètre atteint (pilote absent)');
+        }
+      }
     }
     /* fin par DURÉE : les non-arrivés sont classés au kilomètre atteint */
     if (race.phase === 'racing' && race.simT >= race.endSimT) {

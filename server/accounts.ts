@@ -104,6 +104,10 @@ export class AccountStore {
     const token = newToken();
     const s: Session = { token, user, since: Date.now() };
     this.sessions.set(token, s);
+    /* n°29 : plafond de sessions par compte (PC + mobile + onglets) —
+       les sessions n'expiraient jamais côté serveur */
+    const mine = [...this.sessions.values()].filter((x) => x.user === user);
+    if (mine.length > 5) this.sessions.delete(mine[0].token);
     return s;
   }
 
@@ -115,7 +119,10 @@ export class AccountStore {
     if (!token) return null;
     const s = this.sessions.get(token);
     if (!s) return null;
-    return this.accounts.get(s.user) ?? null;
+    const acc = this.accounts.get(s.user) ?? null;
+    /* n°29 : le compte a pu être désactivé hors setDisabled (fichier
+       édité, restore) — une session d'un désactivé n'est plus valide */
+    return acc && !acc.disabled ? acc : null;
   }
 
   create(user: string, pass: string, level: Level): Account | { error: string } {

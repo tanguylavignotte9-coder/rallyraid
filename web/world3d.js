@@ -771,6 +771,11 @@ function buildWater(group, d) {
     if (i < 2 || i >= pts.length - 2) continue;
     const p = pts[i];
     if (p.biome !== 0 && p.biome !== 1) continue;
+    /* n°29 : nx/nz étaient hors de portée (déclarés dans la boucle
+       RIVIÈRES uniquement) — ReferenceError dès qu'une cellule lac
+       candidate entrait dans la fenêtre : le monde ne se reconstruisait
+       plus (fenêtre figée, voitures hors-piste). */
+    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
     /* VRAI minimum local de H (n°26) : scan fin 25 m — la grille est
        remplie D'ABORD dans un Float64Array (~6 000 appels H), puis on
        détecte les minima locaux stricts. Zone : latéral 300-1600 m
