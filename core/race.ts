@@ -20,7 +20,7 @@
 */
 import {
   speedTarget, driveStep, lateralStep, cosmeticsStep, raceLineTarget, draftMul,
-  DT, CAR_L, CAR_D, V_LIM, FLAT, RW, FINAL, RATIOS, mulberry32,
+  DT, CAR_L, CAR_D, V_LIM, FLAT, RW, FINAL, RATIOS, EDGE_MARGIN, BIOMES, mulberry32,
   type KinCar,
 } from './engine.ts';
 import {
@@ -77,6 +77,29 @@ export const CONTACT_COOLDOWN_S = 120;  // délai mini entre deux manœuvres à 
 export const CONTACT_SEV_HEAVY = 0.35;  // part des contacts « lourds »
 export const STOPANDGO_MIN = 2;         // pénalité stop-and-go (prochain POI)
 export const FINE_HEAVY = 1500;         // amende (faute lourde)
+/* n°29 : littéraux externalisés (AUCUNE valeur modifiée — preuve par
+   re-simulation bit à bit, cf. commit séparé) */
+export const DUEL_VISION_M = 40;        // vision du devancier (nearestAhead)
+export const BRAKE_STYLE_PLAYER = 0.75; // style de freinage du pilote (speedTarget f)
+export const FOLLOW_GAIN = 0.35;        // gain de la fermeture douce de suivi
+export const LAT_DOOR_M = 1.9;          // porte latérale (duel + pincement + faute)
+export const PARKED_PUSH_LAT_MIN = 1.4;// seuil de poussette d'une voiture garée
+export const PARKED_PUSH_M = 2.2;      // poussée latérale de la garée (resolvePairs)
+export const ROAD_USE_FRAC = 0.9;      // fraction de demi-largeur utilisable (garée)
+export const PARKED_MIN_EDGE = 0.3;    // butée mini de la garée
+export const TIRE_WEAR_FULL_H = 3600 * 2; // heures à plein grip pour user une gomme
+export const STRESS_FATIGUE = 0.5;     // poids fatigue dans la gravité contact
+export const STRESS_NIGHT = 0.2;       // poids nuit
+export const HEAVY_PUNCTURE_P = 0.5;   // crevaison vs dégât lourd (tirage)
+export const APEX_MIN_OVERLAP = 1.2;   // avance mini à la corde (rétroviseur)
+export const REG_THR_MIN = 0.15;       // régularité : pédale mini « stable »
+export const REG_THR_MAX = 0.98;       // régularité : pédale maxi « stable »
+export const REG_ACC_MAX = 0.6;        // régularité : accélération max « stable »
+export const REG_V_MIN = 5;           // régularité : vitesse mini
+export const SLEEP_DEFAULT_H = 7;      // heures de sommeil par défaut (sleep au km)
+export const GEAR_DERIVE_MIN_RPM = 2500; // rpm mini de dérivation de rapport (reprise)
+export const BULLETIN_STEP_M = 70_000; // bulletins : pas de tronçon
+export const BULLETIN_AHEAD = 3;       // bulletins : nb de tronçons annoncés
 
 /* ============ AGRESSIVITÉ DE CONDUITE (3 niveaux, plan du joueur) ============
    Réglage du programmateur, comme le curseur moteur. Le niveau modifie
@@ -546,7 +569,7 @@ function evalPlan(race: Race, car: RaceCar) {
            ('repair' ≠ 'garage') : aucun arrêt garage possible. */
         const kind: PoiKind = a.type === 'refuel' ? 'station'
           : a.type === 'sleep' ? 'hotel' : 'garage';
-        const hours = a.type === 'sleep' ? ((a as { hours?: number }).hours ?? 7) : 0;
+        const hours = a.type === 'sleep' ? ((a as { hours?: number }).hours ?? SLEEP_DEFAULT_H) : 0;
         const ok = engageStop(race, car, kind, hours);
         if (ok) acts.splice(i, 1);
         return;
@@ -563,7 +586,7 @@ function nearestAhead(race: Race, car: RaceCar): RaceCar | null {
   for (const o of race.cars) {
     if (o.id === car.id) continue;
     const gap = o.s - car.s;
-    if (gap > 0 && gap < 40 && gap < bestGap) { best = o; bestGap = gap; }
+    if (gap > 0 && gap < DUEL_VISION_M && gap < bestGap) { best = o; bestGap = gap; }
   }
   return best;
 }
@@ -674,7 +697,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
      bride plus la vitesse (l'arrêt de survie 30 h reste) ; la nuit
      reste la nuit pour le rendu et la gravité de contact. */
   const draft = front ? draftMul(car, front) : 1;
-  let vT = speedTarget(trk, car.s, FLAT, 0.75);
+  let vT = speedTarget(trk, car.s, FLAT, BRAKE_STYLE_PLAYER);
   /* SUIVI ANTICIPATIF + DUEL CÔTÉ LIBRE — la décision se prend AVANT
      driveStep (elle ne dépend que de front.d/hwDuel/gap/car.v) :
      - côté d'attaque : on essaie d'abord le côté OPPOSÉ à celui où
@@ -689,7 +712,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   const A = AGG[aggrOf(car)];
   if (front) {
     const gap = front.s - car.s;
-    const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - 1.05;
+    const hwDuel = Math.min(trk.wAt(car.s), trk.wAt(front.s)) - EDGE_MARGIN;
     /* n°27 : une voiture ARRÊTÉE n'est pas un duel — l'examen
        d'attaque passe pour TOUS les profils (dvReq forcé ≤ −0,5),
        sinon le profil sécurité ne dépasse jamais un arrêté :
@@ -708,13 +731,13 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
         }
       }
     }
-    if (gap < CAR_L && info.attackSide !== 0 && Math.abs(front.d - car.d) < 1.9) {
+    if (gap < CAR_L && info.attackSide !== 0 && Math.abs(front.d - car.d) < LAT_DOOR_M) {
       const t = Math.max(-hwDuel, Math.min(hwDuel, front.d + info.attackSide * (CAR_D + A.margin)));
       if (Math.abs(t - front.d) >= CAR_D) dT = t;
     }
     const freeGap = gap - CAR_L;
     const vFront = frontStopped ? 0 : front.v;
-    vT = Math.min(vT, vFront + Math.max(0, freeGap - A.followDead) * 0.35
+    vT = Math.min(vT, vFront + Math.max(0, freeGap - A.followDead) * FOLLOW_GAIN
       + (info.attackSide !== 0 ? A.pressMps : 0));
   }
   /* n°27 : crevaison = consigne plafonnée à PUNCTURE_CAP_KMH — la
@@ -724,7 +747,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
      jamais augmenter au-delà du cap. */
   if (car.punctured) vT = Math.min(vT, PUNCTURE_CAP_KMH / 3.6);
   driveStep(trk, car, vT, dt, draft);
-  const hw = trk.wAt(car.s) - 1.05;
+  const hw = trk.wAt(car.s) - EDGE_MARGIN;
   dT = Math.max(-hw, Math.min(hw, dT));
   lateralStep(car, dT, dt);
   /* ROULIS/TANGAGE : sans cosmeticsStep, roll/pitch restent à 0 et
@@ -748,7 +771,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
   /* USURE DES GOMMES : proportionnelle au grip sollicité (cercle de
      friction — la gomme travaille) × facteur d'usure du type monté */
   car.tireWear = Math.min(TIRE_WEAR_MAX, car.tireWear
-    + car.grip * TIRES[car.tire].wear * dt / (TIRE_WEAR_MAX * 3600 * 2));
+    + car.grip * TIRES[car.tire].wear * dt / (TIRE_WEAR_MAX * TIRE_WEAR_FULL_H));
   /* crevaison surprise : gomme morte → risque par pas, PRNG semé */
   if (!car.punctured && car.tireWear >= TIRE_WEAR_MAX && race.rng() < PUNCTURE_WORN_P) {
     car.punctured = true;
@@ -777,7 +800,7 @@ function stepCar(race: Race, car: RaceCar, hour: number, dt: number): DuelInfo {
      consigne ; l'absence d'incident (moitié) se lit sur car.incidents */
   /* régularité : la consigne de croisière est la vitesse EFFECTIVE
      stable (n°24 : plus de cap — la référence est la vitesse tenue) */
-  const stable = car.thr > 0.15 && car.thr < 0.98 && Math.abs(car.acc) < 0.6 && car.v > 5;
+  const stable = car.thr > REG_THR_MIN && car.thr < REG_THR_MAX && Math.abs(car.acc) < REG_ACC_MAX && car.v > REG_V_MIN;
   car.regTimer = stable ? car.regTimer + dt : 0;
 
   if (car.s >= trk.finishS) {
@@ -797,8 +820,8 @@ function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: nu
   const night = hour >= 22 || hour < 6;
   /* gravité : fatigue + nuit + vitesse haute poussent vers le lourd */
   const stress = Math.min(1,
-    attacker.fatigue / FATIGUE_EMERG_H * 0.5
-    + (night ? 0.2 : 0)
+    attacker.fatigue / FATIGUE_EMERG_H * STRESS_FATIGUE
+    + (night ? STRESS_NIGHT : 0)
     /* V_LIM (rupteur 6e ≈ 73,3 m/s = 264 km/h) est la référence
        physique : le terme module la gravité sur toute la plage. */
     + Math.min(0.3, attacker.v / V_LIM * 0.3));
@@ -812,13 +835,13 @@ function applyContact(race: Race, attacker: RaceCar, defender: RaceCar, hour: nu
      côte à côte : espace dû.
      Sans faute claire : incident de course, pas de sanction. */
   const overlap = attacker.s - (defender.s - CAR_L); // avancée de l'attaquant
-  const atApexOk = overlap > 1.2;                   // essieu avant ≥ rétroviseur
+  const atApexOk = overlap > APEX_MIN_OVERLAP;                   // essieu avant ≥ rétroviseur
   const sideGap = Math.abs(attacker.d - defender.d);
   /* espace dû RELATIF : en forêt/altitude l'écart 1,9 m est
      géométriquement irréalisable (max 1,8 / 1,1 m) — tout contact y
      était une faute automatique ; la place due est plafonnée par la
      chaussée elle-même */
-  const hwDuel = Math.min(race.trk.wAt(attacker.s), race.trk.wAt(defender.s)) - 1.05;
+  const hwDuel = Math.min(race.trk.wAt(attacker.s), race.trk.wAt(defender.s)) - EDGE_MARGIN;
   const spaceOk = sideGap >= Math.min(1.9, hwDuel);
   const fault = !atApexOk || !spaceOk;
 
@@ -865,14 +888,14 @@ function resolvePairs(race: Race) {
     if (gap < 0) continue;
     const latSep = Math.abs(front.d - back.d);
     const frontStopped = front.st === 'stop' || front.st === 'dry' || front.st === 'finish';
-    if (frontStopped && latSep < 1.4) {
+    if (frontStopped && latSep < PARKED_PUSH_LAT_MIN) {
       /* clamp RELATIF : la voiture garée doit rester SUR la chaussée
          (90 % de la demi-largeur utilisable) — l'ancien clamp absolu
          ±2,2 la plaçait hors route en altitude (hw 0,55). Poussée à
          2,2 m : 1,4 ne séparait pas assez pour laisser passer le
          coureur (besoin réel ≈ CAR_D) */
-      const lim = Math.max(0.3, 0.9 * (race.trk.wAt(front.s) - 1.05));
-      front.d = front.d >= back.d ? Math.min(back.d + 2.2, lim) : Math.max(back.d - 2.2, -lim);
+      const lim = Math.max(PARKED_MIN_EDGE, ROAD_USE_FRAC * (race.trk.wAt(front.s) - EDGE_MARGIN));
+      front.d = front.d >= back.d ? Math.min(back.d + PARKED_PUSH_M, lim) : Math.max(back.d - PARKED_PUSH_M, -lim);
       front.dSm = front.d;
     }
     /* pincement : TOUTE voiture (y compris garée) — défense dernière :
@@ -880,7 +903,7 @@ function resolvePairs(race: Race) {
        retrouver, mais si ça arrive, on ne peut plus TRAVERSER une
        voiture arrêtée (l'ancien !frontStopped laissait le coureur
        passer au travers, gap mesuré à -3,6 km) */
-    if (gap < CAR_L && latSep < 1.9) {
+    if (gap < CAR_L && latSep < LAT_DOOR_M) {
       back.s = front.s - CAR_L;
       back.v = Math.min(back.v, front.v);
     }
@@ -913,12 +936,14 @@ export function bulletinsStep(race: Race) {
   if (race.phase !== 'racing') return;
   if (race.simT - race.lastBulletinT < BULLETIN_H * 3600) return;
   race.lastBulletinT = race.simT;
-  const biomes: Record<number, string> = { 0: 'Plaine', 1: 'Forêt', 2: 'Désert', 3: 'Altitude' };
+  /* n°29/H5 : les noms de biomes viennent du cœur (BIOMES[b].name) —
+     plus de copie locale synchronisée à la main */
+  const biomes: Record<number, string> = Object.fromEntries(BIOMES.map((b, i) => [i, b.name]));
   let lead = 0;
   for (const c of race.cars) if (c.s > lead) lead = c.s;
   const parts: string[] = [];
-  for (let d = 0; d < 3; d++) {
-    const s = lead + d * 70_000; // 3 tronçons de 70 km devant la tête
+  for (let d = 0; d < BULLETIN_AHEAD; d++) {
+    const s = lead + d * BULLETIN_STEP_M; // tronçons devant la tête
     const rain = weatherRain(race.seed, s);
     const b = Math.floor(race.trk.biomeAt(Math.min(s, race.trk.finishS - 1)));
     parts.push(`${Math.round(s / 1000)} km ${biomes[b] ?? '?'}${rain ? ' (pluie)' : ''}`);
@@ -1051,7 +1076,7 @@ export function deserializeRace(raw: string): Race {
       let g = 0;
       for (let q = 5; q >= 0; q--) {
         const r = RATIOS[q] * FINAL;
-        if (car.v / (2 * Math.PI * RW) * r * 60 >= 2500) { g = q; break; }
+        if (car.v / (2 * Math.PI * RW) * r * 60 >= GEAR_DERIVE_MIN_RPM) { g = q; break; }
       }
       car.gear = g;
       car.rpm = 1000;

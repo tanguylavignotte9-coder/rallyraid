@@ -62,10 +62,10 @@ export const V_LIM = RPM_MAX / 60 * 2 * Math.PI * RW / (RATIOS[5] * FINAL); // �
 export function torqueAt(rpm: number): number {
   /* montée linéaire 0,55@1000 -> 1@RPM_PEAK, plateau jusqu'à 5300,
      chute -> 0,72@RPM_MAX (rupteur) */
-  if (rpm < 1000) return TMAX * (0.35 + 0.2 * rpm / 1000);
-  if (rpm < RPM_PEAK) return TMAX * (0.55 + 0.45 * (rpm - 1000) / (RPM_PEAK - 1000));
-  if (rpm < 5300) return TMAX;
-  return TMAX * Math.max(0.72, 1 - (rpm - 5300) * 0.28 / (RPM_MAX - 5300));
+  if (rpm < IDLE_RPM) return TMAX * (0.35 + 0.2 * rpm / IDLE_RPM);
+  if (rpm < RPM_PEAK) return TMAX * (0.55 + 0.45 * (rpm - IDLE_RPM) / (RPM_PEAK - IDLE_RPM));
+  if (rpm < RPM_PLATEAU_END) return TMAX;
+  return TMAX * Math.max(TORQUE_RUPT_FRAC, 1 - (rpm - RPM_PLATEAU_END) * 0.28 / (RPM_MAX - RPM_PLATEAU_END));
 }
 export function rpmOf(gear: number, v: number): number {
   const r = RATIOS[gear] * FINAL;
@@ -82,6 +82,22 @@ export const FLAT = 1e9; // pas de plafond : la seule limite est la chaîne de f
                    // (v² ≤ μ·g/cv) et le moteur lui-même (couple, traînée)
 export const CAR_L = 4.6; // emprise longitudinale anti-collision (m)
 export const CAR_D = 2.05; // séparation latérale minimale des centres (m)
+export const EDGE_MARGIN = 1.05; // n°29 : marge d'accotement soustraite de la demi-largeur (partagée)
+/* n°29 partie C : littéraux externalisés (AUCUNE valeur modifiée) */
+export const DRAFT_RANGE_M = 30;       // aspiration : portée du sillage
+export const DRAFT_LAT_MAX = 2.5;     // aspiration : déport latéral max (attaque n°19)
+export const DRAFT_SIDE_MUL = 0.70;  // aspiration : sillage côte à côte
+export const IDLE_RPM = 1000;         // ralenti moteur
+export const RPM_PLATEAU_END = 5300;  // fin du plateau de couple
+export const TORQUE_RUPT_FRAC = 0.72; // couple résiduel au rupteur
+export const LIMITER_RAMP_RPM = 200; // rampe du limiteur (rupteur progressif)
+export const RUSH_SHIFT_RPM = 5500;   // passage précipité : régime mini actuel
+export const SHIFT_FALL_RPM = 3200;   // passage précipité : régime du rapport +1
+export const SHIFT_CUT_S = 0.25;      // coupure de passage (s)
+export const DEAD_BAND_STRAIGHT = 0.6; // bande morte en ligne droite (m/s)
+export const DEAD_BAND_TURN = 0.75;   // resserrement de la bande en virage
+export const IND_STEP_M = 10;          // chaîne de freinage : pas d'induction
+export const CV_EPS = 1e-4;           // courbure quasi nulle (ligne droite)
 
 export type KinCar = {
   s: number; // abscisse curviligne absolue (m, croît sans borne)
@@ -140,7 +156,7 @@ export function speedTarget(r: Track, s: number, vCap: number, f = 0.75): number
     const sj = s + j * SEG2;
     const muJ = r.muAt(sj);
     const cv = Math.max(Math.abs(r.cvAt(sj - 3)), Math.abs(r.cvAt(sj)), Math.abs(r.cvAt(sj + 3)));
-    const vC = cv < 1e-4 ? 1e4 : Math.sqrt(muJ * G / cv);
+    const vC = cv < CV_EPS ? 1e4 : Math.sqrt(muJ * G / cv);
     vNext = Math.min(vNext, vC);
     if (j > 0) {
       /* aBrake scalé par le grip LOCAL comme le frein réel (avant :
@@ -176,8 +192,8 @@ export function draftMul(behind: KinCar, front: KinCar): number {
      d'attaque (dd jusqu'à 2,5 = CAR_D + marge agressif n°19). Le
      rupteur borne le gain de vitesse (physique : le moteur ne peut
      pas dépasser le régime), l'aspiration agit par la traînée. */
-  if (ds > 30 || ds <= -CAR_L || dd > 2.5) return 1;
-  if (ds <= 0) return 0.70;   /* côte à côte : sillage plein */
+  if (ds > DRAFT_RANGE_M || ds <= -CAR_L || dd > DRAFT_LAT_MAX) return 1;
+  if (ds <= 0) return DRAFT_SIDE_MUL;   /* côte à côte : sillage plein */
   return 1 - 0.3 * (1 - ds / 30);
 }
 
@@ -211,10 +227,10 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
   const rpmRaw = c.v <= 0.01 ? 1000 : Math.max(1000, c.v / (2 * Math.PI * RW) * (RATIOS[c.gear] * FINAL) * 60);
   c.rpm = Math.min(rpmRaw, RPM_MAX);
   if (c.shiftT > 0) c.shiftT -= dt;
-  else if (c.gear < 5 && (c.rpm >= RPM_SHIFT_UP || (c.rpm >= 5500 && rpmOf(c.gear + 1, c.v) >= 3200))) { c.gear++; c.shiftT = 0.25; }
-  else if (c.gear > 0 && c.rpm <= RPM_SHIFT_DN) { c.gear--; c.shiftT = 0.25; }
+  else if (c.gear < 5 && (c.rpm >= RPM_SHIFT_UP || (c.rpm >= RUSH_SHIFT_RPM && rpmOf(c.gear + 1, c.v) >= SHIFT_FALL_RPM))) { c.gear++; c.shiftT = SHIFT_CUT_S; }
+  else if (c.gear > 0 && c.rpm <= RPM_SHIFT_DN) { c.gear--; c.shiftT = SHIFT_CUT_S; }
   c.rpm = rpmOf(c.gear, c.v);
-  const lim = Math.max(0, Math.min(1, 1 - (rpmRaw - (RPM_MAX - 200)) / 200));
+  const lim = Math.max(0, Math.min(1, 1 - (rpmRaw - (RPM_MAX - LIMITER_RAMP_RPM)) / LIMITER_RAMP_RPM));
   const FEng = c.shiftT > 0 ? 0 : torqueAt(c.rpm) * RATIOS[c.gear] * FINAL * 0.9 / RW * c.pwr * lim;
   let lonG = 0; // part du budget grippée par le gaz ou le frein
   c.brkCmd = 0;
@@ -225,7 +241,7 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
      frein PLEIN avant l'apex et le frein léger (rogne à ~20 % par
      l'ellipse) ne peut pas finir de descendre : la voiture entrait
      0,3 m/s trop vite et dépassait le budget de grip à l'apex. */
-  const band = 0.6 * (1 - 0.75 * Math.min(latG, 1));
+  const band = DEAD_BAND_STRAIGHT * (1 - DEAD_BAND_TURN * Math.min(latG, 1));
   if (vT > c.v + 0.6) {
     const Fd = Math.min(FMAX, FEng) * kLong;
     F += Fd;
@@ -284,7 +300,7 @@ export function driveStep(r: Track, c: KinCar, vT: number, dt: number, draft = 1
    de ligne à 90 km/h ne se fait pas en 0,1 s) et amorti en accélération —
    le suiveur se pose sur sa ligne sans jamais toupiller autour. */
 export function raceLineTarget(r: Track, s: number): number {
-  const hw = r.wAt(s) - 1.05;
+  const hw = r.wAt(s) - EDGE_MARGIN;
   /* la VRAIE trajectoire : extérieur à l'engagement, intérieur à la
      corde, extérieur à la sortie. La corde se prend sur la courbure
      proche (10 m devant — turn-in tardif : la corde se prend EN entrant
