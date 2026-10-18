@@ -301,6 +301,11 @@ export const BIOME_SURF_CRR = [1.0, 1.25, 1.15, 1.1];
 /* écart d'altitude du TERRAIN environnant vs tracé : ravin sous un
    pont, roche au-dessus d'un tunnel (données du tracé, déterministes) */
 export const SEG_GROUND = 0;    // route au sol
+export const SEG_LIMIT = 18;     // m — n°32 : seuil pont/tunnel abaissé de 25 :
+                                 // la bande 15-25 m (jupe en mur = estrade) devient
+                                 // de vrais ponts/tunnels. Mesuré graine 12345,
+                                 // 2000 km : ponts 3,6 % · tunnels 3,8 %, tous les
+                                 // biomes ≥ 2,8 % (verrou TF ≥ 2 % OK).
 export const SEG_BRIDGE = 1;    // pont : terrain = tracé - ravin
 export const SEG_TUNNEL = 2;    // tunnel : terrain = tracé + roche
 
@@ -557,7 +562,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
   }
   for (let i = 0; i < RSAMP; i++) {
     terr[i] = h[i] - gap[i];   // = H exact : le serveur connaît le terrain
-    segType[i] = gapS[i] > 25 ? SEG_BRIDGE : gapS[i] < -25 ? SEG_TUNNEL : SEG_GROUND;
+    segType[i] = gapS[i] > SEG_LIMIT ? SEG_BRIDGE : gapS[i] < -SEG_LIMIT ? SEG_TUNNEL : SEG_GROUND;
   }
   return { k, s0, hd, xs, zs, h, terr, segType, w, mua, crrA, biome, pois };
 }

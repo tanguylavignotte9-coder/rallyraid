@@ -62,6 +62,7 @@ let lastFpsT = performance.now(), frames = 0;
 let orbitT = 0;
 const camPos = new THREE.Vector3();
 const camLook = new THREE.Vector3();
+let camZoom = 1;    // n°32 : 0,45 (zoom serré) .. 4 (vue large)
 let poiLights = [];
 /* ---- décor : état des couches L1/L2, eau, skyline ---- */
 let winS0 = 0;                 // abscisse du 1er point de la fenêtre (hash stable)
@@ -86,7 +87,9 @@ function terrainRamp(j) { return Math.min(1, j / 12); }
 
 /* brouillard par biome : plaine, forêt (brume serrée), désert (air sec),
    altitude */
-const BIOME_FOG_RANGE = [[300, 2400], [120, 1400], [200, 3000], [150, 1800]];
+/* n°32 : fog plafonné SOUS le bord de la L1 (2 389 m) — le bord
+   « coupé au couteau » du monde n'est plus visible par temps clair. */
+const BIOME_FOG_RANGE = [[300, 2300], [120, 1400], [200, 2300], [150, 1800]];
 
 /* ---- SON MOTEUR (n°24) : WebAudio, une voix par voiture visible.
    Oscillateur en dents de scie (fréquence = rpm/60 × 4 explosions/tour
@@ -147,11 +150,16 @@ function updateEngineAudio() {
     if (!v) { v = makeVoice(); voices.set(id, v); }
     const rpm = m.rpm ?? 0;
     const thr = m.thrS ?? 0;
-    const f = Math.max(30, rpm / 60 * 4);       // 4 explosions/tour
-    v.osc.frequency.setTargetAtTime(f, ac.currentTime, 0.06);
-    v.sub.frequency.setTargetAtTime(f / 2, ac.currentTime, 0.06);
+    /* n°32 : gamme étendue — ~42 Hz au ralenti, ~670 Hz au rupteur
+       (4 octaves au lieu de 2,8) : la montée de régime s'ENTEND.
+       Filtre asservi (plus brillant à haut régime). Sous 150 tr/min
+       (moteur coupé/à l'arrêt) : silence — plus de ronflement. */
+    const f = rpm < 150 ? 0 : Math.max(42, 42 * Math.pow(rpm / 900, 1.35));
+    v.osc.frequency.setTargetAtTime(f || 42, ac.currentTime, 0.06);
+    v.sub.frequency.setTargetAtTime((f || 42) / 2, ac.currentTime, 0.06);
+    v.filt.frequency.setTargetAtTime(f ? 350 + f * 1.9 : 600, ac.currentTime, 0.06);
     const att = 1 / (1 + (dist / 140) ** 2);    // distance²
-    const g = muted ? 0 : (0.05 + 0.4 * thr) * att;
+    const g = (muted || rpm < 150) ? 0 : (0.05 + 0.4 * thr) * att;
     v.gain.gain.setTargetAtTime(g, ac.currentTime, 0.06);
   }
   /* voitures sorties du champ : voix coupée */
@@ -193,17 +201,24 @@ function initScene(container) {
   sun.castShadow = shadowsOn;
   if (shadowsOn) {
     sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.left = -80; sun.shadow.camera.right = 80;
-    sun.shadow.camera.top = 80; sun.shadow.camera.bottom = -80;
-    sun.shadow.camera.far = 600;
+    sun.shadow.camera.left = -120; sun.shadow.camera.right = 120;
+    sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120;
+    sun.shadow.camera.far = 900;
   }
+  /* n°32 : les cibles suivent la voiture vue — sinon les ombres ne
+     se voient qu'aux ~80 m de l'ORIGINE de la carte. */
+  const sunTarget = new THREE.Object3D(); scene.add(sunTarget);
+  sun.target = sunTarget;
   scene.add(sun);
-  scene.userData.sun = sun;
+  scene.userData.sun = sun; scene.userData.sunTarget = sunTarget;
   scene.userData.hemi = hemi;
 
   const moon = new THREE.DirectionalLight(0x8ea6cc, 0.15);
+  const moonTarget = new THREE.Object3D(); scene.add(moonTarget);
+  moon.target = moonTarget;
+  moon.castShadow = shadowsOn;   // commuté avec la nuit dans updateSky
   scene.add(moon);
-  scene.userData.moon = moon;
+  scene.userData.moon = moon; scene.userData.moonTarget = moonTarget;
 
   /* étoiles : visibles la nuit seulement (opacité pilotée par l'heure) */
   const starGeo = new THREE.BufferGeometry();
@@ -227,6 +242,26 @@ function initScene(container) {
   };
   addEventListener('resize', resize);
   new ResizeObserver(resize).observe(container);
+  /* n°32 : boutons +/− zoom (tap-friendly), molette en bonus */
+  if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+  const mkBtn = (txt, fn) => {
+    const b = document.createElement('button');
+    b.textContent = txt;
+    b.style.cssText = 'position:absolute;right:12px;width:44px;height:44px;border-radius:50%;'
+      + 'border:1px solid #ffffff55;background:#00000066;color:#fff;font-size:22px;'
+      + 'cursor:pointer;z-index:5;backdrop-filter:blur(2px)';
+    b.addEventListener('click', fn);
+    container.appendChild(b);
+    return b;
+  };
+  mkBtn('+', () => { camZoom = Math.min(4, camZoom * 1.3); })
+    .style.bottom = '64px';
+  mkBtn('−', () => { camZoom = Math.max(0.45, camZoom / 1.3); })
+    .style.bottom = '12px';
+  container.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    camZoom = Math.min(4, Math.max(0.45, camZoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  }, { passive: false });
 }
 
 /* ============================================================
@@ -270,6 +305,21 @@ async function refreshWorld() {
     villageLights = [];
     decorRand = mulberry32(snap.seed ?? 42);
     winS0 = s0;
+    /* n°32 : fondu longitudinal des segs — 1 aux points pont/tunnel,
+       fondu linéaire sur 10 points (160 m) autour, 0 ailleurs.
+       O(n·10) par rebuild, négligeable. DOIT être prêt avant
+       buildRoad : la jupe appelle terrainY. */
+    segFade = new Float64Array(d.pts.length);
+    for (let i = 0; i < d.pts.length; i++)
+      segFade[i] = (d.pts[i].seg ?? 0) !== 0 ? 1 : 0;
+    for (let i = 0; i < d.pts.length; i++) {
+      if (segFade[i] > 0) continue;
+      let d2 = 11;
+      for (let j = 1; j <= 10; j++) {
+        if ((segFade[i + j] ?? 0) > 0 || (segFade[i - j] ?? 0) > 0) { d2 = j; break; }
+      }
+      if (d2 <= 10) segFade[i] = 1 - d2 / 11;
+    }
     buildRoad(group, d);
     buildTerrain(group, d);
     buildMidFar(group, d);
@@ -402,26 +452,32 @@ function buildSegments(group, pts, segVal, makeMesh) {
    remblai doux au sol, vallée qui s'ouvre sous les ponts, roche qui
    couvre les tunnels. PURE de (position, graine) : stable au
    rebuild, identique au serveur (core/terrain.ts). */
-const T_BLEND = 45;                    // m : raccord latéral accotement -> H
-const T_GAP_ON = 15, T_GAP_FULL = 35; // m : ouverture du talus selon |gap|
+const T_BLEND = 45;   // m : talus minimal accotement -> H ; étendu à 2,5×|gap| si grand
+/* n°32 : fondu d'écart BINAIRE — le terrain épouse la route partout où
+   il n'y a PAS de pont/tunnel (plus jamais de mur/estrade sous la
+   route) ; autour des segs (segFade, ±10 points) le terrain s'ouvre
+   progressivement : ravin sous les ponts, roche au-dessus des tunnels.
+   Le talus latéral s'étale : jamais plus raide que ~22°. */
+let segFade = null;  // Float64Array par point de fenêtre (1 aux segs, fondu autour)
 function terrainY(p, i, dist) {
   const seed = snap?.seed ?? 42;
   const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
   const x = p.x + nx * dist, z = p.y + nz * dist;
   const hT = H(x, z, seed);
-  const gap = p.z - H(p.x, p.y, seed);
-  const wGap = Math.max(0, Math.min(1, (Math.abs(gap) - T_GAP_ON) / (T_GAP_FULL - T_GAP_ON)));
-  const wDist = Math.max(0, Math.min(1, (dist - (p.w + 2)) / T_BLEND));
+  const wGap = segFade ? (segFade[i] ?? 0) : 0;
+  const talus = Math.max(T_BLEND, Math.abs(p.z - H(p.x, p.y, seed)) * 2.5);
+  const wDist = Math.max(0, Math.min(1, (dist - (p.w + 2)) / talus));
   return p.z - 0.05 + (hT - (p.z - 0.05)) * Math.min(1, wDist + wGap);
 }
 /* terrain à une position monde QUELCONQUE (maisons, clochers, lumières
-   de village) — sans le poids latéral ; même fondu d'écart. */
+   de village). n°32 : les maisons/villages (250 m-1,2 km de la route)
+   se posent sur le VRAI terrain H — l'ancien fondu les posait au
+   niveau de la route dès que |gap| ≤ 15 m (71 % des km) : villages
+   flottants ou enterrés. À cette distance, le terrain rendu = H
+   (wDist saturé). */
 function terrainAtXY(p, x, z) {
   const seed = snap?.seed ?? 42;
-  const hT = H(x, z, seed);
-  const gap = p.z - H(p.x, p.y, seed);
-  const wGap = Math.max(0, Math.min(1, (Math.abs(gap) - T_GAP_ON) / (T_GAP_FULL - T_GAP_ON)));
-  return p.z - 0.05 + (hT - (p.z - 0.05)) * wGap;
+  return H(x, z, seed);
 }
 
 /* ---- terrain : manteau low-poly ~400 m de chaque côté ---- */
@@ -480,11 +536,15 @@ function buildMidFar(group, d) {
   const RINGS = [];
   for (let k = 0; ; k++) {
     const dd = 400 * Math.pow(1.22, k);
-    if (dd > 1800) break;
+    if (dd > 2400) break;
     RINGS.push(dd);
   }
   if (!RINGS.length) return;
-  const SAMPL = 4;                       // 1 point sur 4 (64 m)
+  const SAMPL = 1;                       // n°32 : chaque point (16 m) — à 64 m la
+                                        // corde s'écartait de la courbe jusqu'à
+                                        // 19-22 m sur les épingles (R 25-50 m) :
+                                        // trous en coin entre L0 et L1. Le maillage
+                                        // reste minuscule (~12 k sommets/fenêtre).
   let vcount = 0;
   const cellSide = 220 / (STEP * SAMPL); // parcelle agricole ~220 m
   const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
@@ -1043,14 +1103,8 @@ function makeCarMesh(car) {
   sprite.scale.set(7, 1.8, 1);
   sprite.position.y = 3;
   g.add(sprite);
-  const dustGeo = new THREE.SphereGeometry(0.5, 4, 3);
-  const dustMat = new THREE.MeshBasicMaterial({ color: 0xb9a889, transparent: true, opacity: 0 });
-  const dust = new THREE.Mesh(dustGeo, dustMat);
-  dust.position.set(0, 0.4, -2.6);
-  dust.scale.set(2.5, 1.2, 2.5);
-  g.add(dust);
   scene.add(g);
-  return { group: g, wheels, frontWheels: wheels.slice(0, 2), headMat, brakeMat, dust, tgt: null };
+  return { group: g, wheels, frontWheels: wheels.slice(0, 2), headMat, brakeMat, tgt: null };
 }
 
 /* setData(snap) : alimente les cibles — le poll serveur (1 s) est LA
@@ -1103,7 +1157,6 @@ function syncTargets(d) {
         if (dd < best) { best = dd; biome = wp.biome; }
       }
     }
-    m.dust.material.opacity = m.tgt.v > 8 ? (biome === 2 ? 0.5 : 0.2) : 0;
   }
   for (const [id, m] of carMeshes) {
     if (!seen.has(id)) { scene.remove(m.group); carMeshes.delete(id); }
@@ -1218,14 +1271,14 @@ function updateCamera(dt) {
   if (stopped) {
     orbitT += dt * 0.25;
     target = new THREE.Vector3(
-      p.x + Math.cos(orbitT) * 18,
-      p.y + 7,
-      p.z + Math.sin(orbitT) * 18);
+      p.x + Math.cos(orbitT) * 18 * camZoom,
+      p.y + 7 * camZoom,
+      p.z + Math.sin(orbitT) * 18 * camZoom);
     look = p.clone();
   } else {
     const fx = Math.cos(m.rhd), fz = Math.sin(m.rhd);
-    target = new THREE.Vector3(p.x - fx * 14, p.y + 6, p.z - fz * 14);
-    look = new THREE.Vector3(p.x + fx * 10, p.y, p.z + fz * 10);
+    target = new THREE.Vector3(p.x - fx * 14 * camZoom, p.y + 6 * camZoom, p.z - fz * 14 * camZoom);
+    look = new THREE.Vector3(p.x + fx * 10 * camZoom, p.y, p.z + fz * 10 * camZoom);
   }
   const k = 1 - Math.exp(-dt / 0.4);
   camPos.lerp(target, k);
@@ -1247,9 +1300,24 @@ function updateSky() {
   const elev = Math.sin(Math.max(0, Math.min(1, dayT)) * Math.PI);
   const az = (h / 24) * Math.PI * 2;
   const sunDir = new THREE.Vector3(Math.cos(az), Math.max(elev, 0.05), Math.sin(az));
-  sun.position.copy(sunDir).multiplyScalar(400);
-  sun.intensity = 0.2 + elev * 1.5;
-  moon.position.set(-sunDir.x, Math.max(0.3, 1 - elev), -sunDir.z).multiplyScalar(400);
+  /* n°32 : soleil ET lune ancrés sur la voiture vue (ombres qui
+     suivent la caméra), commutation des ombres jour/nuit (UNE SEULE
+     lumière castShadow à la fois = une passe d'ombre par frame),
+     teinte chaude à l'aube/crépuscule. */
+  const sunTarget = scene.userData.sunTarget, moonTarget = scene.userData.moonTarget;
+  const night = h >= 21 || h < 5;
+  const fm = carMeshes.get(followId);
+  const cx = fm?.rx ?? 0, cy = fm?.ry ?? 0, cz = fm?.rz ?? 0;
+  sun.position.set(cx + sunDir.x * 400, cy + sunDir.y * 400, cz + sunDir.z * 400);
+  sunTarget.position.set(cx, cy, cz);
+  sun.intensity = night ? 0 : 0.25 + elev * 1.55;
+  sun.castShadow = shadowsOn && !night;
+  sun.color.setHex(elev < 0.35 && !night ? 0xffb066 : 0xfff3d6);
+  const moonDir = new THREE.Vector3(-sunDir.x, Math.max(0.35, 1 - elev), -sunDir.z).normalize();
+  moon.position.set(cx + moonDir.x * 400, cy + moonDir.y * 400, cz + moonDir.z * 400);
+  moonTarget.position.set(cx, cy, cz);
+  moon.intensity = night ? 0.4 : 0;
+  moon.castShadow = shadowsOn && night;
 
   const car = followCar();
   const b = car ? (world?.pts?.find?.((p) => Math.abs(p.x - car.pos3.x) < 50)?.biome ?? 0) : 0;
@@ -1257,7 +1325,7 @@ function updateSky() {
   /* brouillard PAR BIOME (jour clair) : plaine, forêt serrée, désert
      air sec, altitude — la nuit et la pluie gardent leurs contraintes */
   let [fogNear, fogFar] = BIOME_FOG_RANGE[b] ?? [300, 2200];
-  if (h >= 21 || h < 5) { sky.setHex(NIGHT); sun.intensity = 0.05; fogNear = 60; fogFar = 900; }
+  if (h >= 21 || h < 5) { sky.setHex(NIGHT); fogNear = 60; fogFar = 900; }
   else if (h < 8) sky.lerpColors(new THREE.Color(NIGHT), new THREE.Color(0xf2b98a), (h - 5) / 3);
   else if (h < 18) sky.setHex(0x87b5d8);
   else if (h < 20) sky.lerpColors(new THREE.Color(0xf2975a), new THREE.Color(NIGHT), (h - 18) / 2.5);
@@ -1281,7 +1349,7 @@ function updateSky() {
   }
   /* VILLAGES : les points lumineux s'allument avec les POI */
   for (const g of villageLights) g.material.opacity = nightNow ? 0.9 : 0;
-  hemi.intensity = nightNow ? 0.18 : 0.9;
+  hemi.intensity = nightNow ? 0.12 : 0.45;
   for (const m of carMeshes.values()) {
     m.headMat.emissive.setHex(nightNow ? 0xfff2b0 : 0x000000);
   }

@@ -33,9 +33,13 @@ const oct = (o: { lam: number; amp: number; so: number }, x: number, y: number, 
 export function H(x: number, y: number, seed: number): number {
   return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed) + oct(O4, x, y, seed);
 }
-/* plateforme routière (m) : la route « terrasse » — elle suit la
-   géographie, pas chaque pli ; l'octave fine (ravins) est retirée,
-   ce qui crée l'écart route/terrain = ponts/tunnels. */
+/* plateforme routière (m), n°32 : la route suit les collines O3 à
+   80 % (au lieu de 50 %) — l'écart route/terrain passait 15 m sur
+   27 % des km (estrades noires) ; il passe > 15 m sur 14,5 % et
+   > 20 m sur 3,7 % (mesuré, 3 graines × 1000 km). Seuls les vrais
+   ravins/creux (O4, retiré) gardent un grand écart = ponts/tunnels.
+   L'octave fine O4 reste retirée. Fonction PURE — le tracé
+   horizontal est bit à bit inchangé. */
 export function Hroad(x: number, y: number, seed: number): number {
-  return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed, 0.5);
+  return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed, 0.8);
 }

@@ -32,6 +32,9 @@ async function poll() {
     if (!d.cars?.length) return;
     snap = d;
     $('clock').textContent = d.clock;
+    /* n°32 : badge de multiplicateur de temps (transparence — visible de tous) */
+    const badge = $('speedBadge');
+    if (badge) { const sp = d.speed ?? 1; badge.style.display = sp > 1 ? 'block' : 'none'; badge.textContent = '⏩ ×' + sp; }
     renderCarList();
     W.setData(d);
   } catch { /* silence — le prochain tick réessaie */ } finally {

@@ -171,6 +171,49 @@ test('TF : topographie — ponts et tunnels >= 2 % TOUS biomes, cols reels', () 
   assert.ok(cols >= 15, `cols avec proeminence >= 100 m : ${cols} < 15 / 2000 km`);
 });
 
+test('n°32 : plus d\'estrade possible — tout grand écart est un seg', () => {
+  /* n°32 : Hroad suit O3 à 80 % + fondu d'écart BINAIRE — pour tout
+     échantillon non-seg, |h − terr| ≤ SEG_LIMIT + 1 : le terrain
+     épouse la route hors ponts/tunnels, plus de mur/estrade. */
+  const rt = makeRoute(12345, 2000);
+  let worst = 0, checked = 0;
+  for (let k = 0; k < rt.nChunks; k++) {
+    const c = ensureChunk(rt, k);
+    for (let i = 0; i < 2600; i++) {
+      if (c.segType[i] !== 0) continue;          // ponts/tunnels exclus
+      const d = Math.abs(c.h[i]! - c.terr[i]!);
+      if (d > worst) worst = d;
+      checked++;
+    }
+  }
+  assert.ok(checked > 100_000, `assez d'échantillons (${checked})`);
+  assert.ok(worst <= 19, `écart route/terrain hors segs : ${worst.toFixed(1)} m > 19 (SEG_LIMIT 18 + 1)`);
+});
+
+test('n°32 : calibration des segs — ponts ET tunnels par biome ∈ [2 %, 12 %]', () => {
+  /* n°32 : seuil abaissé 25 → 18 m : la bande 15-25 m (estrades)
+     devient de vrais ponts/tunnels, TOUS biomes ≥ 2 % (verrou TF),
+     plafonnés à 12 % (le monde reste majoritairement au sol). */
+  const rt = makeRoute(12345, 2000);
+  const bridgeM = [0, 0, 0, 0], tunnelM = [0, 0, 0, 0], kmB = [0, 0, 0, 0];
+  for (let k = 0; k < rt.nChunks; k++) {
+    const c = ensureChunk(rt, k);
+    for (let i = 0; i < 2600; i++) {
+      const b = Math.floor(c.biome[i]!);
+      kmB[b] += 8;
+      if (c.segType[i] === 1) bridgeM[b] += 8;
+      else if (c.segType[i] === 2) tunnelM[b] += 8;
+    }
+  }
+  for (let b = 0; b < 4; b++) {
+    assert.ok(kmB[b] > 50_000, `biome ${b} : assez de km (${(kmB[b] / 1000).toFixed(0)})`);
+    const bp = 100 * bridgeM[b]! / kmB[b]!;
+    const tp = 100 * tunnelM[b]! / kmB[b]!;
+    assert.ok(bp >= 2 && bp <= 12, `biome ${b} : ponts ${bp.toFixed(1)} % hors [2, 12]`);
+    assert.ok(tp >= 2 && tp <= 12, `biome ${b} : tunnels ${tp.toFixed(1)} % hors [2, 12]`);
+  }
+});
+
 test('TF : pentes physiques — p95 <= 6 %, scale voiture preservee', () => {
   const rt = makeRoute(12345, 2000);
   const trk = routeTrack(rt);
@@ -194,7 +237,9 @@ test('TF : pentes physiques — p95 <= 6 %, scale voiture preservee', () => {
   /* n°31 : le résidu apparent plaine monte (0,45 → 0,73 mesuré) parce
      qu'épingles et lacets traversent le micro-relief EN TRAVERS — c'est
      l'effet du tracé V5, pas une régression du champ H. */
-  assert.ok(rms(res[0]!) <= 0.80, `plaine : RMS ${rms(res[0]!).toFixed(2)} m > 0.80`);
+  /* n°32 : Hroad suit O3 à 80 % — la plaine vallonne plus (0,84 m
+     mesuré) ; c'est le prix voulu de la fin des estrades. */
+  assert.ok(rms(res[0]!) <= 0.90, `plaine : RMS ${rms(res[0]!).toFixed(2)} m > 0.90`);
   assert.ok(rms(res[1]!) <= 0.80, `foret : RMS ${rms(res[1]!).toFixed(2)} m > 0.80`);
 });
 

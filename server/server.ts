@@ -120,6 +120,11 @@ function loadRace(): Race {
 const race = loadRace();
 let saveAcc = 0;
 let snapshot = buildSnapshot();
+let speedFactor = 1;   // n°32 : multiplicateur de temps (super utilisateur)
+                       // ×1/×2/×5/×10 — les RAFALES font speedFactor× plus de pas.
+                       // ADR 0004 intact : stepRace est une boucle pure, tout
+                       // découpage en pas est bit à bit identique (cf. commentaire
+                       // du tick). CPU ×10 ≈ 5 ms/33 ms pour 10 voitures : OK.
 
 /* CB de proximité : canal global unique ; la RÉCEPTION est filtrée par
    la distance entre équipes (≤ CB_RANGE_KM). Anti-flood par équipe.
@@ -204,6 +209,7 @@ function buildSnapshot() {
   const hour = parisHour(race);
   return {
     simT: race.simT,
+    speed: speedFactor,
     hour,
     clock: parisClock(race),
     phase: race.phase,
@@ -586,6 +592,17 @@ const server = http.createServer(async (req, res) => {
       });
       return;
     }
+    /* n°32 : multiplicateur de temps — réservé aux supers+admin */
+    if (url.pathname === '/api/speed' && req.method === 'POST') {
+      if (acc.level === 'player') { sendJSON(res, 403, { error: 'réservé aux supers' }); return; }
+      const body = JSON.parse(await readBody(req) || '{}') as { factor?: number };
+      const f = Number(body?.factor);
+      if (![1, 2, 5, 10].includes(f)) { sendJSON(res, 400, { error: 'facteur invalide (1, 2, 5 ou 10)' }); return; }
+      speedFactor = f;
+      console.log(`Multiplicateur de temps : ×${f}`);
+      sendJSON(res, 200, { ok: true, speed: f });
+      return;
+    }
 
     /* ---------- routes ADMIN ---------- */
     if (url.pathname.startsWith('/api/admin/')) {
@@ -680,6 +697,8 @@ const server = http.createServer(async (req, res) => {
         cbLog = [];
         cbLast.clear();
         Object.assign(race, fresh);
+        speedFactor = 1;
+        console.log('Multiplicateur remis à ×1 (reset)');
         snapshot = buildSnapshot();
         save();
         sendJSON(res, 200, { ok: true, phase: race.phase, startEpochMs: race.config.startEpochMs });
@@ -807,7 +826,7 @@ setInterval(() => {
       console.log(`Départ : ${race.cars.length} voitures, dont ${auto} auto-attribuées, ${outOfGrid} comptes hors grille (max ${race.config.maxCars})`);
       console.log('Départ donné !');
     }
-    if (race.phase !== 'finished') stepRace(race, STEP_BATCH);
+    if (race.phase !== 'finished') stepRace(race, STEP_BATCH * speedFactor);
   }
   /* snapshot : NE PAS le reconstruire 30 fois/s — sa sémantique est
      un cache 1 s (utilisateurs sans voiture). Une seule fois par

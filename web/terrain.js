@@ -34,7 +34,8 @@ const oct = (o, x, y, seed, k = 1) =>
 export function H(x, y, seed) {
   return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed) + oct(O4, x, y, seed);
 }
-/* plateforme routière (m) — cf. core/terrain.ts */
+/* plateforme routière (m) — cf. core/terrain.ts. n°32 : O3 à 80 %,
+   À L'IDENTIQUE du cœur (test CI d'égalité bit à bit). */
 export function Hroad(x, y, seed) {
-  return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed, 0.5);
+  return oct(O1, x, y, seed) + oct(O2, x, y, seed) + oct(O3, x, y, seed, 0.8);
 }

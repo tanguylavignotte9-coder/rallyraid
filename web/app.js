@@ -62,6 +62,7 @@ async function poll() {
     if (r.status !== 200) return;
     snap = d;
     snapAt = performance.now();   /* pour l'extrapolation de la mini-carte */
+    if (window.refreshSpeedUI) window.refreshSpeedUI();
     $('conn').textContent = 'connecté'; $('conn').className = 'on';
     /* 3D à 15 Hz — LE but du changement : cibles fraîches à chaque tick,
        AVANT tout await (l'ancien ordre attendait fetchRoutePts) */
@@ -877,6 +878,32 @@ async function initMe() {
         sel.appendChild(o);
       }
     }
+    /* n°32 : multiplicateur de temps — visible et actionnable des supers
+       uniquement ; le badge est visible de TOUS (transparence). */
+    const spd = document.createElement('div');
+    spd.style.cssText = 'display:flex;gap:4px;margin-top:4px';
+    for (const f of [1, 2, 5, 10]) {
+      const b = document.createElement('button');
+      b.textContent = '×' + f;
+      b.dataset.f = f;
+      b.style.cssText = 'padding:2px 8px;border-radius:6px;border:1px solid #ffffff44;'
+        + 'background:#00000055;color:#fff;cursor:pointer';
+      b.addEventListener('click', async () => {
+        const r = await fetch('/api/speed', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ factor: f }) });
+        if (r.ok) refreshSpeedUI();
+      });
+      spd.appendChild(b);
+    }
+    sel.parentElement.appendChild(spd);
+    window.refreshSpeedUI = () => {
+      const cur = snap?.speed ?? 1;
+      for (const b of spd.children) {
+        b.style.background = Number(b.dataset.f) === cur ? '#3f6ad8' : '#00000055';
+        b.style.fontWeight = Number(b.dataset.f) === cur ? 'bold' : 'normal';
+      }
+      const badge = $('speedBadge');
+      if (badge) { badge.style.display = cur > 1 ? 'block' : 'none'; badge.textContent = '⏩ ×' + cur; }
+    };
   }
   return me;
 }

@@ -11,6 +11,7 @@
 ### La course
 - **Itinéraire linéaire** : un départ, une arrivée, pas de boucle. Les biomes s'enchaînent tout au long de la course (plaine → forêt → désert → altitude…).
 - **Temps réel 1:1 strict** et **assumer l'énormité** : 7 jours de course = 15-25 000 km au compteur, on roule vraiment tout ce temps.
+- **Amendement n°32 (temps)** : multiplicateur d'observation ×2/×5/×10, **super utilisateur uniquement**, visible de tous (badge), remis à ×1 au reset — l'horloge de course avance ×N pour tout le monde (mode observation/test ; le départ reste à l'horloge réelle).
 - **Départ commun** à date et heure fixes ; **fin paramétrée par événement** (distance totale ou durée).
 - **Quelques dizaines de voitures maximum** : une course intime où l'on se connaît tous.
 - **Classement** : premier arrivé au temps total (arrêts et incidents inclus) ; en intermédiaire, la position sur la route fait foi ; les non-arrivés d'une course à durée sont **classés au kilomètre atteint**.
@@ -99,6 +100,7 @@
   - *Altitude* : route ÉTROITE à 1 file (le duel côte à côte y est physiquement impossible — la garde anti-collision sépare en LONG), pierre, lacets marqués, PONTS sur les ravins et TUNNELS sous la roche (données du tracé par sample : terrain qui s'écarte du tracé, déterministes et régénérables à l'identique).
 - **La route ondule à toutes les échelles** : du serpent macro (waypoints, courants) au grain de la piste (méandre ψ continu + crêtes verticales rapides) — le volant vit même au milieu des droites du désert.
 - **V5 (n°31)** : épingles 140-180° rares en plaine/forêt (2 % du menu), **lacets en enfilade** (2-3 épingles alternées R 25-40 m) en altitude, courants resserrés plaine/désert ; vitesses consigne visées ~175 (plaine) / ~142 (forêt) / ~179 (désert — le royaume de la pointe conservé) / ~94 km/h (altitude). V5 remplace V4 : re-set des courses en cours (alpha).
+- **n°32 (monde)** : la route suit le relief à 80 % (O3) — fin des estrades noires ; seuil ponts/tunnels abaissé à 18 m ; le terrain épouse la route hors segs (fondu binaire + talus adaptatif), villages posés sur le vrai H.
 - **L'altitude suit le biome** : amplitude de relief par biome (le désert vallonne, l'altitude grimpe vers les cols), retour à la moyenne conservé.
 - **Explorateur de graines** (page admin) : mini-carte vue de dessus, couleurs par biome, profil d'altitude, km par biome, virages par catégorie, densité POI — calculé par le MÊME code de génération que la course, puis l'admin lance le reset avec cette graine.
 - **Fenêtre de préparation** (joueur) : carte complète + profil d'altitude + bandes de biomes le long de la course, un seul graphique mobile first ; POI non marqués.
