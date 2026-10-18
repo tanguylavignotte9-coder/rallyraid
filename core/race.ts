@@ -59,9 +59,13 @@ export function weatherRain(seed: number, s: number): boolean {
    fait à la préparation ; le changement se fait au garage. */
 export type TireKind = 'tendres' | 'dures' | 'pluie';
 export const TIRES: Record<TireKind, { grip: number; wetGrip: number; wear: number; price: number }> = {
-  tendres: { grip: 1.06, wetGrip: 0.80, wear: 1.6, price: 900 },
-  dures:   { grip: 0.96, wetGrip: 0.78, wear: 0.6, price: 700 },
-  pluie:   { grip: 1.00, wetGrip: 1.02, wear: 1.0, price: 800 },
+  /* n°30 : wear calibré pour des vies ~6 h (tendres) · ~12 h (dures) · ~8 h
+     (pluie) à l'usage moyen du peloton (grip sollicité ≈ 0,58, mesuré sur la
+     course de référence n°27). Rapports exacts 2 : 1,5 : 1 — la dure est la
+     référence wear = 1. Grip/wetGrip/prix inchangés : pure durabilité. */
+  tendres: { grip: 1.06, wetGrip: 0.80, wear: 2.0, price: 900 },
+  dures:   { grip: 0.96, wetGrip: 0.78, wear: 1.0, price: 700 },
+  pluie:   { grip: 1.00, wetGrip: 1.02, wear: 1.5, price: 800 },
 };
 export const TIRE_WEAR_MAX = 1;         // jauge d'usure : 0 neuve → 1 morte
 export const TIRE_WORN_MU = 0.85;       // grip résiduel d'une gomme usée
@@ -87,7 +91,7 @@ export const PARKED_PUSH_LAT_MIN = 1.4;// seuil de poussette d'une voiture garé
 export const PARKED_PUSH_M = 2.2;      // poussée latérale de la garée (resolvePairs)
 export const ROAD_USE_FRAC = 0.9;      // fraction de demi-largeur utilisable (garée)
 export const PARKED_MIN_EDGE = 0.3;    // butée mini de la garée
-export const TIRE_WEAR_FULL_H = 3600 * 2; // heures à plein grip pour user une gomme
+export const TIRE_WEAR_FULL_H = 3600 * 7; // n°30 : heures à PLEIN GRIP (cercle saturé en continu) pour user une gomme wear=1 (dures) — à l'usage peloton (~0,58) : dures ~12 h, tendres ~6 h, pluie ~8 h
 export const STRESS_FATIGUE = 0.5;     // poids fatigue dans la gravité contact
 export const STRESS_NIGHT = 0.2;       // poids nuit
 export const HEAVY_PUNCTURE_P = 0.5;   // crevaison vs dégât lourd (tirage)
