@@ -176,6 +176,7 @@ export type PlanAction =
   | { id: number; type: 'refuel' | 'sleep' | 'repair'; atKm?: number; hours?: number }
   | { id: number; type: 'refuel'; ifTag: 'fuelLow'; threshold: number }
   | { id: number; type: 'sleep'; ifTag: 'fatigueHigh'; threshold: number; hours: number }
+  | { id: number; type: 'repair'; ifTag: 'tireWorn'; threshold: number }
   | { id: number; type: 'power'; power: number }
   | { id: number; type: 'tires'; tire: TireKind };
 
@@ -262,6 +263,7 @@ export function defaultPlan(carId: number): Plan {
     actions: [
       { id: carId * 1000 + 1, type: 'refuel', ifTag: 'fuelLow', threshold: 0.18 },
       { id: carId * 1000 + 2, type: 'sleep', ifTag: 'fatigueHigh', threshold: 20, hours: 7 },
+      { id: carId * 1000 + 3, type: 'repair', ifTag: 'tireWorn', threshold: 0.85 },
     ],
   };
 }
@@ -502,6 +504,18 @@ function evalPlan(race: Race, car: RaceCar) {
     } else if (a.type === 'refuel' && 'ifTag' in a && a.ifTag === 'fuelLow') {
       if (car.fuel / TANK_L < a.threshold) {
         if (engageStop(race, car, 'station', 0)) acts.splice(i, 1);
+        return;
+      }
+    } else if (a.type === 'repair' && 'ifTag' in a && a.ifTag === 'tireWorn') {
+      /* n°28 : les gommes sont une jauge comme le carburant et la
+         fatigue — la réparation se déclenche sur l'USURE (mesurable),
+         pas sur un kilomètre deviné à la préparation. Une voiture
+         déjà en route vers SON garage ne re-cible pas (un plan
+         réarmé à la connexion ne doit pas détourner l'arrêt en
+         cours) ; la règle consommée se réarme à l'actualisation
+         suivante du plan, comme les deux autres règles. */
+      if (car.tireWear >= a.threshold && !(car.st === 'toStop' && car.stopKind === 'garage')) {
+        if (engageStop(race, car, 'garage', 0)) acts.splice(i, 1);
         return;
       }
     } else if (a.type !== 'tires' && a.atKm !== undefined) {

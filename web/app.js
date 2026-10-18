@@ -440,8 +440,13 @@ function dashTick(pollK) {
     el.classList.remove('amber', 'alert');
     el.innerHTML = `${fmtHMS(left)}`;
   } else {
-    $('cellSpd').querySelector('.lcdlabel').textContent = 'VITESSE';
+    /* n°28 : dégât lourd visible au dash — le moteur est à 30 % de
+       capacité jusqu'au garage (n°27) : sans cette étiquette, le
+       joueur ne comprend pas pourquoi sa voiture ne tient plus le
+       rythme (le journal seul le disait). */
+    $('cellSpd').querySelector('.lcdlabel').textContent = me.heavyDamage ? 'VITESSE · MOTEUR 30 %' : 'VITESSE';
     $('lcdSpd').innerHTML = `${Math.round(sm.v)}<span class="u"> km/h</span>`;
+    $('lcdSpd').classList.toggle('amber', !!me.heavyDamage);
   }
 
   /* CARBURANT : bargraph + litres ; alerte ambre sous 15 % */
@@ -722,6 +727,7 @@ function renderActions() {
     let txt;
     if (a.type === 'refuel' && a.ifTag === 'fuelLow') txt = `Règle : plein si réservoir < ${Math.round(a.threshold * 100)} %`;
     else if (a.type === 'sleep' && a.ifTag === 'fatigueHigh') txt = `Règle : dormir ${a.hours} h si veille > ${a.threshold} h`;
+    else if (a.type === 'repair' && a.ifTag === 'tireWorn') txt = `Règle : garage si usure gommes > ${Math.round(a.threshold * 100)} %`;
     else if (a.type === 'refuel' && a.atKm !== undefined) txt = `Plein au km ${a.atKm}`;
     else if (a.type === 'sleep' && a.atKm !== undefined) txt = `Dormir au km ${a.atKm}`;
     else if (a.type === 'repair' && a.atKm !== undefined) txt = `Garage au km ${a.atKm}`;
@@ -741,6 +747,7 @@ $('addAction').onclick = () => {
   const id = nextLocalId--;
   if (kind === 'refuelLow') draft.actions.push({ id, type: 'refuel', ifTag: 'fuelLow', threshold: 0.18 });
   else if (kind === 'sleepFat') draft.actions.push({ id, type: 'sleep', ifTag: 'fatigueHigh', threshold: 20, hours: 7 });
+  else if (kind === 'repairWorn') draft.actions.push({ id, type: 'repair', ifTag: 'tireWorn', threshold: 0.85 });
   else {
     const km = prompt('Au kilomètre :');
     if (km === null) return;

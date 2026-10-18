@@ -232,6 +232,7 @@ function buildMe(car: RaceCar): unknown {
       tire: car.tire,
       tireWear: car.tireWear,
       punctured: car.punctured,
+      heavyDamage: car.heavyDamage,
       pendingSG: car.pendingSG,
       incidents: car.incidents,
       plan: car.plan,
