@@ -31,8 +31,6 @@ export const TANK_L = 520;
 export const FUEL_K1 = 0.0025;   // L/s par 1000 tr/min (moteur qui tourne)
 export const FUEL_K2 = 0.0137;   // L/s par (pédale × 1000 tr/min) (charge)
 export const FUEL_IDLE_LPS = 0.00035; // moteur tournant à l'arrêt
-export const V_CAP = 32;             // échelle de stress de contact (m/s) —
-                                    // PLUS le plafond pilote (n°24 : boîte 6)
 export const FATIGUE_EMERG_H = 30;   // arrêt de survie en bord de route
 export const REFUEL_MIN = 12;
 export const REPAIR_MIN = 30;
@@ -1000,9 +998,8 @@ export function rankCars(race: Race): RaceCar[] {
   });
 }
 
-type SerializedCar = Omit<RaceCar, never>;
 type SerializedRace = Pick<Race, 'seed' | 'totalKm' | 'simT' | 'doneSteps' | 'startEpochMs' | 'timeScale' | 'finished' | 'endSimT'> & {
-  cars: (SerializedCar & { plan: Plan })[];
+  cars: RaceCar[];
   nextPlanId: number;
   config: RaceConfig;
   phase: RacePhase;
@@ -1082,7 +1079,3 @@ export function setPlan(car: RaceCar, plan: Plan) {
   if (car.st === 'run') car.pwr = car.plan.power * (car.heavyDamage ? HEAVY_POWER : 1);
 }
 
-export const RACE_CONST = {
-  TANK_L, V_CAP, V_LIM, FUEL_K1, FUEL_K2, FATIGUE_EMERG_H,
-  REFUEL_MIN, REPAIR_MIN, DRY_ASSIST_MIN,
-};

@@ -347,7 +347,7 @@ const server = http.createServer(async (req, res) => {
     /* ---------- auth : TOUT le reste exige une session ----------
        (exception : la page de connexion et son script — sinon personne
        ne peut se connecter) */
-    if (url.pathname === '/login.html' || url.pathname === '/login.js') {
+    if (url.pathname === '/login.html') {
       const file = path.join(WEB_DIR, 'login.html');
       try {
         const data = readFileSync(file);

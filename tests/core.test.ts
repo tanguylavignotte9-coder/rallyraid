@@ -3,8 +3,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  makeGame, advance, DT, L_METERS, CAR_L, CAR_D,
-} from '../core/engine.ts';
+  makeGame, advance, L_METERS,
+} from '../core/proto.ts';
+import { DT, CAR_L, CAR_D } from '../core/engine.ts';
 
 type Res = {
   snaps: string[];
