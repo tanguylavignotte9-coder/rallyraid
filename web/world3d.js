@@ -590,89 +590,162 @@ function buildTerrain(group, d) {
 }
 
 /* ============================================================
-   n°22 — BANDE MI-LOINTAINE L1 (400 m → 1,8 km)
-   1 point route sur 4 (64 m) ; anneaux latéraux à d_k = 400·1.22^k ;
-   l'anneau 0 = terrainY(p, i, 400) EXACT → couture parfaite avec la
-   rangée externe du L0 (même formule). Ondulation macro par biome.
+   n°39 — GRILLE MONDE MI-LOINTAINE L1 (remplace le ruban n°22)
+
+   Le ruban à anneaux 400·1,22^k se CROISAIT lui-même dans chaque
+   virage (repli bowtie : rayon du virage < anneau) : trous avant
+   n°38, SUPERPOSITION de 2 sols après le DoubleSide. Remplacement
+   par une GRILLE alignée aux multiples de 100 m (comme la grille
+   hydro), étendue de PAD au-delà de la bbox de la fenêtre : une
+   grille monde ne peut pas se replier sur elle-même, et le bord du
+   monde arrière/avant reste au-delà du brouillard.
+
+   - corridor |lat| < w+2+400+2 : sommet COLLÉ au bord exact du
+     manteau (position = anneau externe du L0 recopié à l'identique,
+     y = terrainY - 0,1 : couture à 10 cm, TOUJOURS sous le manteau
+     → jamais de z-fight dans les bandelettes convexes) ;
+   - edge..edge+700 : fondu terrainY → H(x,z) (le talus des déblais
+     se referme sur le terrain naturel), enfoncé de 0,1 → 0,4 m ;
+   - au-delà : y = H(x,z) - 0,4 (sol universel : villages, eau,
+     reliefs et props posés sur H restent au-dessus) ;
+   - quads collés des DEUX côtés du manteau ou intégralement
+     collés = sautés (le manteau couvre le couloir) ;
+   - patchwork plaine : cellules 220 m MONDE + haies (n°37) ;
+   - axes climatiques par macro-case 200 m (partagés 2×2) ;
+   - nearest-row par buckets de 500 m. Grille ancrée au monde →
+     stable au glissement de fenêtre (cohérent n°37).
    ============================================================ */
+
 function buildMidFar(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
   const pos = [], col = [], idx = [];
-  const RINGS = [];
-  for (let k = 0; ; k++) {
-    const dd = 400 * Math.pow(1.22, k);
-    if (dd > 2400) break;
-    RINGS.push(dd);
-  }
-  if (!RINGS.length) return;
-  const SAMPL = 1;                       // n°32 : chaque point (16 m) — à 64 m la
-                                        // corde s'écartait de la courbe jusqu'à
-                                        // 19-22 m sur les épingles (R 25-50 m) :
-                                        // trous en coin entre L0 et L1. Le maillage
-                                        // reste minuscule (~12 k sommets/fenêtre).
-  let vcount = 0;
+  const PAD = 2400, CELL = 100, TALUS = 700, BUCK = 500;
   const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
   const HEDGE = new THREE.Color('#3f5a35');
-  const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
-  for (let side = -1; side <= 1; side += 2) {
-    const baseIdx = vcount;
-    for (let i = 0; i < pts.length; i += SAMPL) {
-      const p = pts[i];
-      const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-      /* n°33 : axes climatiques par point route (hérités par les
-         anneaux) — le patchwork agricole est RÉSERVÉ aux plaines
-         tempérées non sèches (famille 0, humidité 0,35-0,75) : plus
-         de parcelles dans un désert ni dans une tourbière. */
-      const T = tempAt(p.x, p.y, seed);
-      const M0 = moistAt(p.x, p.y, seed);
-      const co = coastAt(p.x, p.y, seed);
-      for (let k = 0; k < RINGS.length; k++) {
-        /* n°37 : l'anneau 0 passe à la rangée externe EXACTE du manteau
-           (w + 2 + 400, même formule terrainY, même rangée) → couture
-           parfaite (0,00 m mesuré) : l'ancien anneau à 400 m laissait
-           un décroché de w + 2 ≈ 8 m en latéral. */
-        const dist = k === 0 ? p.w + 2 + 400 : RINGS[k];
-        const x = p.x + nx * side * dist;
-        const zz = p.y + nz * side * dist;
-        const y = terrainY(p, i, dist);
-        let c;
-        if (p.biome === 0 && M0 > 0.35 && M0 < 0.75) {
-          /* PATCHWORK AGRICOLE : parcelles ~220 m, haies aux frontières */
-          /* n°37 : cellule = abscisse MONDE / 220 — l'ancienne clé
-             (indice de fenêtre) remélangeait 73 % des parcelles à
-             chaque glissement de fenêtre : le patchwork de la plaine
-             se recousait en permanence au loin. */
-          const sAbs = winS0 + i * STEP;
-          const cell = Math.floor(sAbs / 220);
-          const inCell = (sAbs / 220) - cell;
-          const edge = inCell < 0.04 || inCell > 0.96;
-          if (edge) c = HEDGE;
-          else {
-            const h4 = posHash(cell + 1000 * side, 5);
-            c = PATCH[Math.floor(h4 * 4) % 4];
-          }
-        } else {
-          c = groundCol(y, T, M0, co);
-          snowAndSea(c, y);
-          c.offsetHSL(0, 0, (posHash(winS0 / STEP + i, k) - 0.5) * 0.04);  // n°37 : rangée monde
-        }
-        push(x, y, zz, c);
-        vcount++;
-      }
+
+  /* bbox de la fenêtre route */
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minZ) minZ = p.y; if (p.y > maxZ) maxZ = p.y;
+  }
+  const gx0 = Math.floor((minX - PAD) / CELL), gx1 = Math.ceil((maxX + PAD) / CELL);
+  const gz0 = Math.floor((minZ - PAD) / CELL), gz1 = Math.ceil((maxZ + PAD) / CELL);
+  const nx = gx1 - gx0 + 1, nz = gz1 - gz0 + 1;
+
+  /* buckets de 500 m : recherche de la rangée route la plus proche */
+  const buckets = new Map();
+  const bkey = (a, b) => a + '|' + b;
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const k = bkey(Math.floor(p.x / BUCK), Math.floor(p.y / BUCK));
+    if (!buckets.has(k)) buckets.set(k, []);
+    buckets.get(k).push(i);
+  }
+
+  /* axes climatiques par macro-case 200 m (partagés par les cellules 2×2) */
+  const climCache = new Map();
+  const climAt = (x, z) => {
+    const mx = Math.floor(x / 200), mz = Math.floor(z / 200);
+    const k = mx * 100003 + mz;
+    let e = climCache.get(k);
+    if (!e) {
+      const ax = mx * 200 + 100, az = mz * 200 + 100;
+      e = { T: tempAt(ax, az, seed), M: moistAt(ax, az, seed), co: coastAt(ax, az, seed), fam: famAt(ax, az, seed) };
+      climCache.set(k, e);
     }
-    /* index : quads entre rangées successives (et L0 raccordé par
-       l'anneau 0 qui RECOPIE la formule du bord externe du L0) */
-    const colsN = RINGS.length;
-    const rows = Math.floor(pts.length / SAMPL);
-    for (let r = 0; r + 1 < rows; r++) {
-      const a = baseIdx + r * colsN, b = a + colsN;
-      for (let k = 0; k + 1 < colsN; k++) {
-        if (side === -1) idx.push(a + k, b + k, a + k + 1, a + k + 1, b + k, b + k + 1);
-        else idx.push(a + k, a + k + 1, b + k, a + k + 1, b + k + 1, b + k);
+    return e;
+  };
+
+  /* état par sommet : 0 = libre sans côté (loin) ; ±1 libre côté ± ; ±2 collé côté ± */
+  const sideOf = new Int8Array(nx * nz);
+  const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
+
+  for (let gz = gz0; gz <= gz1; gz++) {
+    for (let gx = gx0; gx <= gx1; gx++) {
+      const x = gx * CELL, z = gz * CELL;
+      const vi = (gz - gz0) * nx + (gx - gx0);
+      const cl = climAt(x, z);
+      let px = x, pz = z, y = 0;
+      let side = 0;
+      /* rangée route la plus proche : 3×3 buckets de 500 m */
+      let bi = -1, bd = Infinity;
+      const bx = Math.floor(x / BUCK), bz = Math.floor(z / BUCK);
+      for (let dbx = -1; dbx <= 1; dbx++) for (let dbz = -1; dbz <= 1; dbz++) {
+        const arr = buckets.get(bkey(bx + dbx, bz + dbz));
+        if (!arr) continue;
+        for (let q = 0; q < arr.length; q++) {
+          const p = pts[arr[q]];
+          const dd = (x - p.x) * (x - p.x) + (z - p.y) * (z - p.y);
+          if (dd < bd) { bd = dd; bi = arr[q]; }
+        }
       }
+      if (bi < 0) {
+        y = H(x, z, seed) - 0.4;
+      } else {
+        const p = pts[bi];
+        const nvx = -Math.sin(p.hd), nvz = Math.cos(p.hd);
+        const lat = (x - p.x) * nvx + (z - p.y) * nvz;
+        const u = (x - p.x) * Math.cos(p.hd) + (z - p.y) * Math.sin(p.hd);
+        const pastEnd = (bi === 0 && u < -8) || (bi === pts.length - 1 && u > 8);
+        const edge = p.w + 2 + 400;
+        const L = Math.abs(lat);
+        if (pastEnd || L >= edge + TALUS) {
+          y = H(x, z, seed) - 0.4;
+        } else if (L < edge + 2) {
+          /* COLLÉ au bord exact du manteau : anneau externe du L0 */
+          const sd = lat < 0 ? -1 : 1;
+          px = p.x + nvx * sd * edge;
+          pz = p.y + nvz * sd * edge;
+          y = terrainY(p, bi, edge) - 0.1;
+          side = sd * 2;
+        } else {
+          /* talus : terrainY (celui du manteau) fond vers le H vrai */
+          const sd = lat < 0 ? -1 : 1;
+          const t = (L - edge) / TALUS;
+          y = terrainY(p, bi, L) * (1 - t) + (H(x, z, seed) - 0.4) * t - 0.1 * (1 - t);
+          side = sd;
+        }
+      }
+      sideOf[vi] = side;
+      /* couleur : patchwork plaine en cellules 220 m MONDE (n°37) */
+      let c;
+      if (cl.fam === 0 && cl.M > 0.35 && cl.M < 0.75) {
+        const cx = Math.floor(px / 220), cz = Math.floor(pz / 220);
+        const fx = px / 220 - cx, fz = pz / 220 - cz;
+        if (fx < 0.04 || fx > 0.96 || fz < 0.04 || fz > 0.96) c = HEDGE;
+        else c = PATCH[Math.floor(posHash(cx * 3 + cz, 5) * 4) % 4];
+      } else {
+        c = groundCol(y, cl.T, cl.M, cl.co);
+        snowAndSea(c, y);
+        c.offsetHSL(0, 0, (posHash(Math.round(px / 8) + 77, Math.round(pz / 8)) - 0.5) * 0.03);
+      }
+      push(px, y, pz, c);
     }
   }
+
+  /* index : quads monde ; saut de ceux que le manteau couvre */
+  let nQuads = 0, nSkip = 0;
+  for (let jz = 0; jz + 1 < nz; jz++) {
+    for (let jx = 0; jx + 1 < nx; jx++) {
+      const a = jz * nx + jx, b = a + 1, c2 = a + nx, d2 = c2 + 1;
+      const sa = sideOf[a], sb = sideOf[b], sc = sideOf[c2], sd = sideOf[d2];
+      let hp = false, hn = false, gc = 0;
+      if (sa > 0) hp = true; else if (sa < 0) hn = true;
+      if (sb > 0) hp = true; else if (sb < 0) hn = true;
+      if (sc > 0) hp = true; else if (sc < 0) hn = true;
+      if (sd > 0) hp = true; else if (sd < 0) hn = true;
+      if (sa === 2 || sa === -2) gc++;
+      if (sb === 2 || sb === -2) gc++;
+      if (sc === 2 || sc === -2) gc++;
+      if (sd === 2 || sd === -2) gc++;
+      if (gc === 4 || (hp && hn)) { nSkip++; continue; }
+      idx.push(a, c2, b, b, c2, d2);
+      nQuads++;
+    }
+  }
+
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
