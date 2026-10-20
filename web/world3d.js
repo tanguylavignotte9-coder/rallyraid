@@ -23,7 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { H } from './terrain.js';
+import { H, SEA_SL, ss, coastAt, tempAt, moistAt, famAt } from './terrain.js';
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -38,9 +38,45 @@ function mulberry32(a) {
 }
 let decorRand = mulberry32(42);
 
-/* ---- palettes tendres par biome ---- */
-const BIOME_GROUND = ['#8fbf6a', '#2e5d34', '#e0b089', '#8a9099'];
-const BIOME_FOG = [0xcfe8f2, 0x9fb8c8, 0xf0e0c8, 0xcdd6de];
+/* ---- n°33 : PALETTE CLIMATIQUE — la couleur du sol dérive des axes
+   (température, humidité, distance à la côte, altitude) et PLUS d'une
+   étiquette par abscisse. Un versant sous le vent s'assèche → sable ;
+   un fond humide → mousse sombre ; une côte franche → plage. Les
+   transitions sont des DÉGRADÉS réels (champs continus), pas des
+   fondus artificiels entre zones. ---- */
+const SAND   = new THREE.Color('#d9c08a');
+const STEPPE = new THREE.Color('#b7a866');
+const GRASS  = new THREE.Color('#7fae56');
+const MOSS   = new THREE.Color('#4f7a44');
+const TUNDRA = new THREE.Color('#8a9276');
+const LUSH   = new THREE.Color('#2e6b34');
+const BEACH  = new THREE.Color('#e6d4a8');
+const ROCKC  = new THREE.Color('#8a9099');
+const SNOWC  = new THREE.Color('#eef2f5');
+const COL_SEABED = new THREE.Color('#3d5a66');
+
+/* couleur du sol : lissée par ss sur les axes — sable → steppe →
+   prairie → mousse → luxuriant selon l'humidité, tundra pâle vers le
+   froid, roche à l'étage alpin (240-330 m), plage sur les côtes
+   franches (co 0,65-0,95). */
+function groundCol(hr, T, M, co) {
+  const c = new THREE.Color();
+  c.copy(SAND);
+  c.lerp(STEPPE, ss(0.10, 0.22, M));
+  c.lerp(GRASS, ss(0.22, 0.38, M));
+  c.lerp(MOSS, ss(0.52, 0.70, M));
+  c.lerp(LUSH, ss(0.70, 0.85, M));
+  c.lerp(TUNDRA, 0.8 * ss(4, -4, T));
+  c.lerp(ROCKC, ss(240, 330, hr));
+  c.lerp(BEACH, 0.9 * ss(0.65, 0.95, co));
+  return c;
+}
+/* neige au-dessus de SNOW_ALT (/80), fond marin sous SEA_SL+3 —
+   mutateur de couleur, appliqué APRÈS groundCol par sommet. */
+function snowAndSea(c, y) {
+  if (y > SNOW_ALT) c.lerp(SNOWC, Math.min(1, (y - SNOW_ALT) / 80));
+  else if (y < SEA_SL + 3) c.lerp(COL_SEABED, Math.min(1, (SEA_SL + 3 - y) / 60));
+}
 const SNOW_ALT = 300;
 const NIGHT = 0x0a0e1a;
 
@@ -85,11 +121,12 @@ function posHash(a, b) {
 /* rampe de terrain : le bruit prend de l'amplitude en s'éloignant */
 function terrainRamp(j) { return Math.min(1, j / 12); }
 
-/* brouillard par biome : plaine, forêt (brume serrée), désert (air sec),
-   altitude */
+/* brouillard par FAMILLE (n°33) : plaine, désert, forêt (brume serrée),
+   boréal, altitude, littoral */
 /* n°32 : fog plafonné SOUS le bord de la L1 (2 389 m) — le bord
    « coupé au couteau » du monde n'est plus visible par temps clair. */
-const BIOME_FOG_RANGE = [[300, 2300], [120, 1400], [200, 2300], [150, 1800]];
+const FAM_FOG = [0xcfe8f2, 0xf0e0c8, 0x9fb8c8, 0xdde8f0, 0xcdd6de, 0xcfe8f2];
+const FAM_FOG_RANGE = [[300, 2300], [200, 2300], [120, 1400], [150, 1800], [150, 1800], [250, 2100]];
 
 /* ---- SON MOTEUR (n°24) : WebAudio, une voix par voiture visible.
    Oscillateur en dents de scie (fréquence = rpm/60 × 4 explosions/tour
@@ -484,12 +521,19 @@ function terrainAtXY(p, x, z) {
 function buildTerrain(group, d) {
   const pts = d.pts;
   const n = pts.length;
+  const seed = snap?.seed ?? 42;
   const BAND = 400 / STEP;
   const pos = [], col = [], idx = [];
   for (let i = 0; i < n; i++) {
     const p = pts[i];
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-    const base = new THREE.Color(BIOME_GROUND[p.biome] ?? '#7a8a5a');
+    /* n°33 : axes climatiques calculés UNE fois par RANG (point de
+       route) et hérités par toute la rangée latérale — la couleur
+       reste PAR SOMMET via l'altitude réelle du sommet (étage alpin,
+       fond marin). */
+    const T = tempAt(p.x, p.y, seed);
+    const M = moistAt(p.x, p.y, seed);
+    const co = coastAt(p.x, p.y, seed);
     for (let side = -1; side <= 1; side += 2) {
       for (let j = 0; j <= BAND; j++) {
         const dist = p.w + 2 + j * STEP;
@@ -497,8 +541,8 @@ function buildTerrain(group, d) {
         const zz = p.y + nz * side * dist;
         const y = terrainY(p, i, dist) + decorRand() * 0.8 * terrainRamp(j);
         pos.push(x, y, zz);
-        const c2 = base.clone();
-        if (y > SNOW_ALT) c2.lerp(new THREE.Color('#eef2f5'), Math.min(1, (y - SNOW_ALT) / 80));
+        const c2 = groundCol(y, T, M, co);
+        snowAndSea(c2, y);
         c2.offsetHSL(0, 0, (decorRand() - 0.5) * 0.03);
         col.push(c2.r, c2.g, c2.b);
       }
@@ -549,21 +593,26 @@ function buildMidFar(group, d) {
   const cellSide = 220 / (STEP * SAMPL); // parcelle agricole ~220 m
   const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
   const HEDGE = new THREE.Color('#3f5a35');
-  const biomeCol = new THREE.Color();
-  const snow = new THREE.Color('#eef2f5');
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
   for (let side = -1; side <= 1; side += 2) {
     const baseIdx = vcount;
     for (let i = 0; i < pts.length; i += SAMPL) {
       const p = pts[i];
       const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
+      /* n°33 : axes climatiques par point route (hérités par les
+         anneaux) — le patchwork agricole est RÉSERVÉ aux plaines
+         tempérées non sèches (famille 0, humidité 0,35-0,75) : plus
+         de parcelles dans un désert ni dans une tourbière. */
+      const T = tempAt(p.x, p.y, seed);
+      const M0 = moistAt(p.x, p.y, seed);
+      const co = coastAt(p.x, p.y, seed);
       for (let k = 0; k < RINGS.length; k++) {
         const dist = RINGS[k];
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
         const y = terrainY(p, i, dist);
         let c;
-        if (p.biome === 0) {
+        if (p.biome === 0 && M0 > 0.35 && M0 < 0.75) {
           /* PATCHWORK AGRICOLE : parcelles ~220 m, haies aux frontières */
           const cell = Math.floor((i / SAMPL) / cellSide);
           const inCell = ((i / SAMPL) / cellSide) - cell;
@@ -574,11 +623,9 @@ function buildMidFar(group, d) {
             c = PATCH[Math.floor(h4 * 4) % 4];
           }
         } else {
-          biomeCol.set(BIOME_GROUND[p.biome] ?? '#7a8a5a');
-          if (p.biome === 1) biomeCol.offsetHSL(0, 0, (posHash(i, k) - 0.5) * 0.04);
-          if (p.biome === 2) biomeCol.offsetHSL(0, 0, (posHash(i, k + 50) - 0.5) * 0.05);
-          if (y > SNOW_ALT) biomeCol.lerp(snow, Math.min(1, (y - SNOW_ALT) / 80));
-          c = biomeCol;
+          c = groundCol(y, T, M0, co);
+          snowAndSea(c, y);
+          c.offsetHSL(0, 0, (posHash(i, k) - 0.5) * 0.04);
         }
         push(x, y, zz, c);
         vcount++;
@@ -642,11 +689,18 @@ function buildRidges(group, d) {
     const TEETH = 5 + Math.floor(h1 * 4);
     const dirX = Math.cos(p.hd + Math.PI / 2), dirZ = Math.sin(p.hd + Math.PI / 2);
     let vi = 0;
+    /* n°33 : couleur CLIMATIQUE au lieu du relief (famille du lieu) ;
+       mesa tabulaire = climat SEC (moistAt < 0,30), plus d'étiquette ;
+       neige dès que l'altitude réelle du massif dépasse SNOW_ALT. */
+    const T = tempAt(cx, cz, seed);
+    const M = moistAt(cx, cz, seed);
+    const co = coastAt(cx, cz, seed);
+    const dry = M < 0.30;
     const baseY = hMin - 5;
     const snow = new THREE.Color('#eef2f5');
-    const c = new THREE.Color(BIOME_GROUND[p.biome] ?? '#7a8a5a');
-    c.multiplyScalar(0.55);   // teinte ASSOMBRIE : lisibilité en silhouette
-    if (p.biome === 3 && baseY + ridgeH > SNOW_ALT) c.lerp(snow, Math.min(1, (baseY + ridgeH - SNOW_ALT) / 120));
+    const c = groundCol(baseY + ridgeH, T, M, co);
+    c.multiplyScalar(0.55);   // teinte ASSOBRIE : lisibilité en silhouette
+    if (baseY + ridgeH > SNOW_ALT) c.lerp(snow, Math.min(1, (baseY + ridgeH - SNOW_ALT) / 120));
     const cols = [];
     for (let t = 0; t <= TEETH; t++) {
       const u = t / TEETH;
@@ -654,7 +708,7 @@ function buildRidges(group, d) {
       const bz = cz + dirZ * (u - 0.5) * W * 2;
       pos.push(bx, baseY, bz); cols.push(c.r, c.g, c.b);
       const peakH = baseY + ridgeH * (0.6 + 0.4 * posHash(m * 10 + t, 31));
-      if (p.biome === 2) {
+      if (dry) {
         /* MESA tabulaire : plateau plat + flancs raides */
         const topH = baseY + ridgeH * 0.85;
         pos.push(bx + dirX * 8, topH, bz + dirZ * 8); cols.push(c.r, c.g, c.b);
@@ -662,12 +716,12 @@ function buildRidges(group, d) {
       } else {
         pos.push(bx, peakH, bz); cols.push(c.r, c.g, c.b);
       }
-      vi += p.biome === 2 ? 3 : 2;
+      vi += dry ? 3 : 2;
     }
-    const step = p.biome === 2 ? 3 : 2;
+    const step = dry ? 3 : 2;
     for (let t = 0; t < TEETH; t++) {
       const a = t * step, b = (t + 1) * step;
-      if (p.biome === 2) {
+      if (dry) {
         idx.push(a, a + 2, b, a + 2, b + 2, b);
         idx.push(a + 1, a + 2, b + 1, a + 2, b + 2, b + 1);
         idx.push(a + 2, b + 2, b, b + 1, b, b + 2);
@@ -830,6 +884,16 @@ function buildWater(group, d) {
       }
     } else i++;
   }
+  /* n°33 — MER : plan au niveau SEA_SL, centré sur la fenêtre. La
+     côte est une courbe de niveau du champ — visible dès que la
+     route frôle ou traverse la côte ; la chaussée F5 la survole
+     (HroadC = SEA_SL + 12). */
+  const mid = pts[Math.floor(pts.length / 2)];
+  const seaGeo = new THREE.CircleGeometry(2400, 24);
+  seaGeo.rotateX(-Math.PI / 2);
+  const sea = new THREE.Mesh(seaGeo, water);
+  sea.position.set(mid.x, SEA_SL, mid.y);
+  group.add(sea);
   /* LACS : cellules de 2 000 m, plaine/forêt — vrais minima locaux
      de H (n°26), disque d'eau posé dans la cuvette réelle */
   for (let cell = Math.floor(winS0 / 2000); cell <= Math.floor((winS0 + pts.length * STEP) / 2000); cell++) {
@@ -838,7 +902,9 @@ function buildWater(group, d) {
     const i = Math.round(sCell / STEP);
     if (i < 2 || i >= pts.length - 2) continue;
     const p = pts[i];
-    if (p.biome !== 0 && p.biome !== 1) continue;
+    /* n°33 : lacs en plaine/forêt/boréal (familles 0/2/3) — le désert
+       n'a pas de lac, le littoral a la mer, l'altitude a la neige. */
+    if (p.biome !== 0 && p.biome !== 2 && p.biome !== 3) continue;
     /* n°29 : nx/nz étaient hors de portée (déclarés dans la boucle
        RIVIÈRES uniquement) — ReferenceError dès qu'une cellule lac
        candidate entrait dans la fenêtre : le monde ne se reconstruisait
@@ -1320,11 +1386,14 @@ function updateSky() {
   moon.castShadow = shadowsOn && night;
 
   const car = followCar();
-  const b = car ? (world?.pts?.find?.((p) => Math.abs(p.x - car.pos3.x) < 50)?.biome ?? 0) : 0;
+  /* n°33 : famille au point VOITURE par famAt direct (pos3.x = X
+     monde, pos3.y = Z monde) — plus de recherche de point route. */
+  const b = car ? famAt(car.pos3.x, car.pos3.y, snap?.seed ?? 42) : 0;
   const sky = new THREE.Color();
-  /* brouillard PAR BIOME (jour clair) : plaine, forêt serrée, désert
-     air sec, altitude — la nuit et la pluie gardent leurs contraintes */
-  let [fogNear, fogFar] = BIOME_FOG_RANGE[b] ?? [300, 2200];
+  /* brouillard PAR FAMILLE (jour clair) : plaine, désert air sec,
+     forêt brume serrée, boréal, altitude, littoral — la nuit et la
+     pluie gardent leurs contraintes */
+  let [fogNear, fogFar] = FAM_FOG_RANGE[b] ?? [300, 2200];
   if (h >= 21 || h < 5) { sky.setHex(NIGHT); fogNear = 60; fogFar = 900; }
   else if (h < 8) sky.lerpColors(new THREE.Color(NIGHT), new THREE.Color(0xf2b98a), (h - 5) / 3);
   else if (h < 18) sky.setHex(0x87b5d8);
@@ -1334,7 +1403,7 @@ function updateSky() {
   const weather = (car?.weather ?? 'dry') === 'rain';
   if (weather) { fogNear = 40; fogFar = 600; sky.multiplyScalar(0.55); }
   scene.background = sky;
-  scene.fog.color.copy(sky).lerp(new THREE.Color(BIOME_FOG[b] ?? 0xcfe8f2), 0.4);
+  scene.fog.color.copy(sky).lerp(new THREE.Color(FAM_FOG[b] ?? 0xcfe8f2), 0.4);
   scene.fog.near = fogNear;
   scene.fog.far = fogFar;
 
