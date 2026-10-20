@@ -108,6 +108,7 @@ let villageLights = [];         // Points lumineux des villages (nuit)
 let decoRidges = [];            // dégradation fps : reliefs
 let villageGroups = [];         // dégradation fps : villages lointains
 let degraStage = 0;             // 0 rien, 1 skyline, 2 reliefs, 3 villages
+let mantleCaps = null;           // n°40 : plafond de largeur du manteau par rangée (cap au rayon local)
 let lowFpsN = 0, highFpsN = 0;  // n°37 : hystérésis (nb de relevés consécutifs)
 let hudEl = null;               // n°37 : HUD debug fps/dégra
 
@@ -540,6 +541,28 @@ function buildTerrain(group, d) {
   const seed = snap?.seed ?? 42;
   const BAND = 400 / STEP;
   const pos = [], col = [], idx = [];
+  /* n°40 : CAP AU RAYON LOCAL — les colonnes latérales de rangées
+     voisines se croisent au centre de courbure (distance = rayon) :
+     bowties, falaises et triangles inversés (20,6 % du manteau 200-400 m
+     avant n°40, « gros problème visuel » km 3 graine 42). Chaque rangée
+     plafonne ses colonnes à 0,9×R local (min sur ±256 m) : le manteau
+     s'arrête AVANT le centre de courbure → plus aucun repli possible.
+     Les colonnes au-delà du plafond sont RABATTUES sur l'anneau du
+     plafond (quads dégénérés invisibles, transition en éventail).
+     Sur portion droite R = ∞ → plafond 400 → comportement n°37/n°39
+     IDENTIQUE au bit près. */
+  const capRow = new Int32Array(n);
+  for (let i = 0; i < n; i++) {
+    let rMin = Infinity;
+    for (let k = Math.max(1, i - 16); k <= Math.min(n - 2, i + 16); k++) {
+      let dh2 = pts[k + 1].hd - pts[k - 1].hd;
+      while (dh2 > Math.PI) dh2 -= 2 * Math.PI;
+      while (dh2 < -Math.PI) dh2 += 2 * Math.PI;
+      if (dh2 !== 0) rMin = Math.min(rMin, 32 / Math.abs(dh2));   /* 32 m d'arc entre k-1 et k+1 */
+    }
+    capRow[i] = Math.min(400, Math.max(2 * STEP, Math.floor((Math.min(400, 0.9 * rMin) - (pts[i].w + 2)) / STEP) * STEP));
+  }
+  mantleCaps = capRow;   /* lu par buildMidFar pour la couture (même plafond) */
   for (let i = 0; i < n; i++) {
     const p = pts[i];
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
@@ -552,7 +575,7 @@ function buildTerrain(group, d) {
     const co = coastAt(p.x, p.y, seed);
     for (let side = -1; side <= 1; side += 2) {
       for (let j = 0; j <= BAND; j++) {
-        const dist = p.w + 2 + j * STEP;
+        const dist = p.w + 2 + (j * STEP > capRow[i] ? capRow[i] : j * STEP);   // n°40 : colonnes rabattues sur l'anneau du plafond
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
         /* n°37 : jitter ANCRÉ AU MONDE — hash du sommet (x, z) au lieu
@@ -561,7 +584,8 @@ function buildTerrain(group, d) {
            long du voyage), identique pour tous les clients. Bonus :
            deux sommets au même point monde (épingles) obtiennent le
            même jitter → plus d'artefact d'auto-recouvrement. */
-        const y = terrainY(p, i, dist) + posHash(Math.round(x / 8), Math.round(zz / 8)) * 0.8 * terrainRamp(j);
+        const jc = Math.min(j, capRow[i] / STEP);   // n°40 : rampe de jitter évaluée AU plafond (couture identique à la grille)
+        const y = terrainY(p, i, dist) + posHash(Math.round(x / 8), Math.round(zz / 8)) * 0.8 * terrainRamp(jc);
         pos.push(x, y, zz);
         const c2 = groundCol(y, T, M, co);
         snowAndSea(c2, y);
@@ -660,6 +684,7 @@ function buildMidFar(group, d) {
 
   /* état par sommet : 0 = libre sans côté (loin) ; ±1 libre côté ± ; ±2 collé côté ± */
   const sideOf = new Int8Array(nx * nz);
+  const disp = new Float32Array(nx * nz);   /* n°40 : déplacement du collage (0 = libre) */
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
 
   for (let gz = gz0; gz <= gz1; gz++) {
@@ -689,17 +714,30 @@ function buildMidFar(group, d) {
         const lat = (x - p.x) * nvx + (z - p.y) * nvz;
         const u = (x - p.x) * Math.cos(p.hd) + (z - p.y) * Math.sin(p.hd);
         const pastEnd = (bi === 0 && u < -8) || (bi === pts.length - 1 && u > 8);
-        const edge = p.w + 2 + 400;
+        const edge = p.w + 2 + (mantleCaps ? mantleCaps[bi] : 400);   // n°40 : même plafond que le manteau → couture sur l'anneau réel
         const L = Math.abs(lat);
         if (pastEnd || L >= edge + TALUS) {
           y = H(x, z, seed) - 0.4;
         } else if (L < edge + 2) {
           /* COLLÉ au bord exact du manteau : anneau externe du L0 */
           const sd = lat < 0 ? -1 : 1;
-          px = p.x + nvx * sd * edge;
-          pz = p.y + nvz * sd * edge;
-          y = terrainY(p, bi, edge) - 0.1;
-          side = sd * 2;
+          const gx2 = p.x + nvx * sd * edge, gz2 = p.y + nvz * sd * edge;
+          const d2 = Math.hypot(gx2 - x, gz2 - z);
+          if (d2 > 170) {
+            /* n°40 : collage sur un AUTRE bras d'épingle → DÉCOLÉ. Le
+               sommet reste à sa position grille, posé sur la surface du
+               manteau prolongée (terrainY au L réel) − 0,1 m : pas de
+               plaque étirée, pas de trou (le quad reste de taille fan
+               normale), et le couloir éventuel reste sous le manteau. */
+            const jL = Math.max(0, Math.min(25, (L - p.w - 2) / STEP));
+            y = terrainY(p, bi, Math.min(L, edge)) + posHash(Math.round(x / 8), Math.round(z / 8)) * 0.8 * terrainRamp(jL) - 0.1;
+            side = sd;
+          } else {
+            px = gx2; pz = gz2;
+            y = terrainY(p, bi, edge) + posHash(Math.round(px / 8), Math.round(pz / 8)) * 0.8 * terrainRamp((edge - p.w - 2) / STEP) - 0.1;   // n°40 : jitter du manteau RÉPLIQUÉ exactement → couture invisible même au plafond
+            side = sd * 2;
+            disp[vi] = d2;
+          }
         } else {
           /* talus : terrainY (celui du manteau) fond vers le H vrai */
           const sd = lat < 0 ? -1 : 1;
@@ -740,7 +778,11 @@ function buildMidFar(group, d) {
       if (sb === 2 || sb === -2) gc++;
       if (sc === 2 || sc === -2) gc++;
       if (sd === 2 || sd === -2) gc++;
-      if (gc === 4 || (hp && hn)) { nSkip++; continue; }
+      /* n°40 : cap de déplacement — un coin collé à plus de 170 m de sa
+         position grille est un collage sur un AUTRE bras d'épingle (même
+         signe → non couvert par la règle des 2 côtés) : quad sauté, la
+         zone reste couverte par le manteau. Collage légitime ≤ ~145 m. */
+      if (gc === 4 || (hp && hn) || disp[a] > 170 || disp[b] > 170 || disp[c2] > 170 || disp[d2] > 170) { nSkip++; continue; }
       idx.push(a, c2, b, b, c2, d2);
       nQuads++;
     }
