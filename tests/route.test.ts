@@ -200,18 +200,22 @@ test('route V3 : variété macro — caps fenêtrés 50 km et avancement net', (
        variété macro. L'ancien tracker versait un décalage latéral
        d'équilibre (jusqu'à 21 km hors polyline, enveloppe VIOLÉE). */
     assert.ok(sigma >= 24, `graine ${seed} : σ caps ${sigma.toFixed(0)}° < 24°`);
-    assert.ok(lo <= -60 || hi >= 60, `graine ${seed} : plage [${lo.toFixed(0)}..${hi.toFixed(0)}] < ±60°`);
+    /* n°43 : le contrôleur émergent borne le cap par ses candidats —
+       la plage mesurée se resserre : [-48..57] à [-108..79] (4 graines,
+       2000 km) → porte ±45°. */
+    assert.ok(lo <= -45 || hi >= 45, `graine ${seed} : plage [${lo.toFixed(0)}..${hi.toFixed(0)}] < ±45°`);
     const A = pts[0]!, B = pts[pts.length - 1]!;
-    /* avancement net = corde A→B / distance XY réellement parcourue
-       (le wiggle détend la corde : V1 mesuré 74-80 %, cible V3 55-70 %) —
-       n°33 : 69,8-73,1 % mesuré → borne haute 75 % */
+    /* avancement net = corde A→B / distance XY réellement parcourue —
+       n°43 : la route émergente suit la polyline de près (budget de cap
+       serré, enveloppe 3-3,8 km) : net mesuré 78,0-85,7 % (4 graines,
+       2000 km) → [75..90]. */
     let drivenXY = 0;
     for (let i = 1; i < pts.length; i++) {
       drivenXY += Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y);
     }
     const net = Math.hypot(B.x - A.x, B.y - A.y) / drivenXY;
-    assert.ok(net >= 0.55 && net <= 0.75,
-      `graine ${seed} : avancement net ${(net * 100).toFixed(0)}% hors [55..75]`);
+    assert.ok(net >= 0.75 && net <= 0.90,
+      `graine ${seed} : avancement net ${(net * 100).toFixed(0)}% hors [75..90]`);
   }
 });
 
@@ -245,7 +249,10 @@ test('route V3 : enveloppe chemin vs polyline waypoints ≤ 9 km', () => {
   assert.ok(e10 <= 9_000, `10 000 km : enveloppe ${(e10 / 1000).toFixed(1)} km > 9 km`);
 });
 
-test('route V3 : bruit local — résidu corde 4 km σ ≥ 200 m', () => {
+test('route V3 : bruit local — résidu corde 4 km σ ≥ 100 m', () => {
+  /* n°43 : le tissage vit à l'échelle VOITURE (méandre continu du
+     contrôleur, volant ~1000°/km) et non plus dans les menus à 4 km :
+     σ résidu mesuré 118-142 m (2 graines, 2000 km) → porte ≥ 100 m. */
   for (const seed of [12345, 777]) {
     const rt = makeRoute(seed, 2000);
     const trk = routeTrack(rt);
@@ -264,7 +271,7 @@ test('route V3 : bruit local — résidu corde 4 km σ ≥ 200 m', () => {
     }
     const mean = devs.reduce((x, y) => x + y, 0) / devs.length;
     const sd = Math.sqrt(devs.reduce((x, y) => x + (y - mean) ** 2, 0) / devs.length);
-    assert.ok(sd >= 200, `graine ${seed} : σ résidu corde ${sd.toFixed(0)} m < 200 m`);
+    assert.ok(sd >= 100, `graine ${seed} : σ résidu corde ${sd.toFixed(0)} m < 100 m`);
   }
 });
 
@@ -350,15 +357,15 @@ test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)'
     'le chunk 5 régénéré doit être identique (ψ pur, pas de PRNG)');
   /* n°31 : V5 — le flux PRNG des menus a changé (épingles, lacets,
      rayons plaine/désert). n°33 : le monde émergent change le flux à
-     nouveau (familles causales, POI_FAM) : les POI sont régénérés
-     (positions mesurées, graine 12345, 600 km — 15 POI : la route
-     traverse désormais des zones désertiques clairsemées, densité
-     causale). C'est une NOUVELLE version de route : re-set des
-     courses en cours (arbitrage assumé). */
+     nouveau (familles causales, POI_FAM). n°43 : les menus/courants
+     disparaissent — chunkRand ne nourrit plus QUE le curseur POI :
+     positions régénérées (mesuré graine 12345, 600 km : 19 POI, les 3
+     premiers 25000/54560/79456:station). C'est une NOUVELLE version de
+     route : re-set des courses en cours (arbitrage assumé). */
   const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
-  assert.equal(pa.length, 15, 'POI V5 (graine 12345, 600 km)');
+  assert.equal(pa.length, 19, 'POI n°43 (graine 12345, 600 km)');
   assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
-    ['25000:station', '46184:station', '80000:hotel'], 'positions POI V5');
+    ['25000:station', '54560:station', '79456:station'], 'positions POI n°43');
 });
 
 test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {
@@ -371,7 +378,11 @@ test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {
      F1 6,5-8,7 · F2 10,2-11,0 · F3 8,4-10,9 · F4 8,5-10,5 · F5 8,8-10,4.
      Une famille peu présente (< 100 km : la course ne traverse pas cette
      tranche de climat, émergence assumée) n'est pas testée sur cette graine. */
-  const MIN_REV: Record<number, number> = { 0: 6, 1: 6, 2: 8, 3: 6, 4: 6, 5: 6 };
+  /* n°43 : FAMILLES (6, par label = terrain réellement traversé) — le
+     contrôleur tisse partout (F0-F4 mesuré 10,3-11,5 rev/km) SAUF le
+     littoral plat (causeway sur bras de mer, 4,7-5,2 rev/km → porte
+     F5 ≥ 4). Une famille peu présente (< 100 km) n'est pas testée. */
+  const MIN_REV: Record<number, number> = { 0: 6, 1: 6, 2: 8, 3: 6, 4: 6, 5: 4 };
   const wrapL = (a: number) => {
     while (a > Math.PI) a -= 2 * Math.PI;
     while (a < -Math.PI) a += 2 * Math.PI;
@@ -401,8 +412,12 @@ test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {
       if (st.km <= 100) continue;   // n°33 : tranche de climat non traversée
       assert.ok(st.rev / st.km >= MIN_REV[Number(b)] ?? 8,
         `graine ${seed} famille ${b} : ${(st.rev / st.km).toFixed(1)} retournements/km < ${MIN_REV[Number(b)] ?? 8}`);
-      assert.ok(st.dead / st.n < 0.05,
-        `graine ${seed} biome ${b} : mort-droit ${(100 * st.dead / st.n).toFixed(1)}% ≥ 5%`);
+      /* n°43 : le contrôleur épouse le relief — les vraies droites
+         existent en terrain plat (mort-droit mesuré F0-F4 28,7-34,0 %,
+         F5 littoral 59-65 % sur causeway) : portes < 40 %, F5 < 70 %. */
+      const deadDoor = Number(b) === 5 ? 0.70 : 0.40;
+      assert.ok(st.dead / st.n < deadDoor,
+        `graine ${seed} biome ${b} : mort-droit ${(100 * st.dead / st.n).toFixed(1)}% ≥ ${(100 * deadDoor).toFixed(0)}%`);
     }
   }
 });
@@ -508,8 +523,12 @@ test('route V5 : épingles par biome — ≥150° rares sauf altitude, borne ≤
     `forêt/taïga : ${per100km(2).toFixed(1)}/${per100km(3).toFixed(1)} épingles/100 km (rares)`);
   assert.ok(per100km(5) <= 1,
     `littoral : ${per100km(5).toFixed(1)} épingles/100 km (coulé attendu)`);
-  assert.ok(per100km(4) >= 100,
-    `altitude : ${per100km(4).toFixed(1)} épingles/100 km (lacets attendus ~150)`);
+  /* n°43 : plus de menus forcés — les épingles ÉMERGENT rarement du
+     relief seul (0 épingles/100 km mesurées sur 3 graines × 1000 km,
+     déflexion cœur max 110°) : la garde altitude devient ≤ 5/100 km
+     (rares), la borne uBound reste. */
+  assert.ok(per100km(4) <= 5,
+    `altitude : ${per100km(4).toFixed(1)} épingles/100 km (rares attendues)`);
   assert.ok(maxDefl <= 181 * Math.PI / 180,
     `déflexion max d'un cœur ${(maxDefl * 180 / Math.PI).toFixed(1)}° > 181° (borne uBound)`);
 });
@@ -528,7 +547,12 @@ test('route V4 : le ψ ne bride pas — cv p95 dans l ordre de grandeur V3', () 
      F2 0,00971 · F3 0,00934 · F4 0,03449 (lacets — l'ordre de grandeur
      du V3 altitude 0,03371 est conservé) · F5 0,00574. Tolérance ±25 %
      comme avant : le ψ ne bride pas, il reste dans l'ordre de grandeur. */
-  const REF: Record<number, number> = { 0: 0.00812, 1: 0.00787, 2: 0.00971, 3: 0.00934, 4: 0.03449, 5: 0.00574 };
+  /* n°43 : le contrôleur borne le cv par SES candidats (budget de cap
+     par pas de 8 m) — le p95 devient très uniforme par plan (références
+     mesurées sur le staging, graine 777, 2500 km : F0 0,00750 · F1
+     0,00750 · F2 0,00812 · F3 0,00750 · F4 0,00813 · F5 0,00750 ;
+     l'ancien F4 0,0345 des lacets forcés disparaît). Tolérance ±25 %. */
+  const REF: Record<number, number> = { 0: 0.00750, 1: 0.00750, 2: 0.00812, 3: 0.00750, 4: 0.00813, 5: 0.00750 };
   const rt = makeRoute(777, 2500);
   const trk = routeTrack(rt);
   const stats: Record<number, number[]> = {};

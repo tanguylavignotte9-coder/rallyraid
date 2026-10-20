@@ -11,6 +11,23 @@
    (fenêtre mémoire) et se régénèrent À L'IDENTIQUE si on les
    redemande : c'est la garantie des replays et de la reprise serveur.
 
+   n°43 — ROUTE ÉMERGENTE DE LA TOPOLOGIE (rework) :
+   - les TABLES de virages (menus V2ter, courants, ψ de plate-forme,
+     fastAt) sont RETIRÉES : à chaque pas de 8 m, un contrôleur
+     choisit parmi 13 caps candidats simulés sur 192 m (limiteur
+     d'altitude, budget 8 %) au moindre coût — écart route/sol,
+     pente-max (contour), poursuite macro, régularité, laisse
+     latérale, garde anti-croisement (proximité douce + intersection
+     exacte interdite + évasion 2 passes).
+   - ZÉRO PRNG dans la géométrie : le tracé est fonction pure de la
+     topologie (ADR 0004 renforcé) ; le PRNG du chunk ne sert plus
+     qu'aux POI. La mémoire anti-croisement (rt.hist, segments commis
+     tagués par index absolu) rend la régénération d'un chunk ancien
+     bit à bit identique (doublons neutres).
+   - l'ALTITUDE vient du LIMITEUR : la route suit H (octaves fines
+     n°43 du terrain — le relief à l'échelle de la voiture), causeway
+     à seaLevel+3 m ; ponts/tunnels restent topographiques (gap vs H,
+     seuil 18 m).
    n°33 — MONDE ÉMERGENT : le monde AVANT la route.
    - Les 4 biomes d'abscisse (buildSchedule/biomeBlendR) sont RETIRÉS :
      la famille GAMEPLAY (6 entrées, terrain.ts famAt) dérive du
@@ -24,23 +41,19 @@
      projection avancée de LOOK m sur le segment actif) — l'ancien
      tracker visait le waypoint seul et laissait des décalages
      latéraux de 10-20 km (enveloppe 21 km, VIOLATION mesurée).
-   - ψ PAR FAMILLE + RE-BASE : les paramètres d'ondulation sont par
-     famille gameplay (chunk) ; chaque frontière de famille versait
-     un saut permanent dans hdPsi (marche aléatoire, −79° mesurés
-     sur 10 000 km) — hdPsi est RE-BASÉ à 0 au changement de famille.
    - SURFACE CONTINUE : largeur/grip/roulement sont des fonctions
      LISSES des axes climatiques (surfParams) — plus de tables par
      étiquette.
-   L'altitude vient du CHAMP DE MONDE (terrain.ts, n°25) : HroadC
-   (géographie terrassée, causeway au-dessus de la mer) + fastAt
-   (détail voiture pur, amplitude par famille).
+   L'altitude vient du LIMITEUR n°43 (ci-dessous) : la route suit H
+   à ±8 % de pente — HroadC ne sert plus qu'aux climats (surfParams,
+   famAt), pas au tracé.
    Points d'intérêt (station, hôtel, garage) : posés par un CURSEUR
    GLOBAL par type — continuité parfaite aux frontières de chunks,
    densité par FAMILLE (la plaine est riche, le désert est vide),
    espacements tirés du PRNG du chunk. */
 
-import { mulberry32, makeNoise, SEG, type Track } from './engine.ts';
-import { H, Hroad, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
+import { mulberry32, SEG, type Track } from './engine.ts';
+import { H, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -68,11 +81,14 @@ export type Chunk = {
   pois: Poi[];               // points d'intérêt du chunk, triés par s
 };
 
-/* état d'entrée d'un chunk (cap, position, altitude au 1er échantillon) ;
-   la hauteur porte le retour à la moyenne ; 4 nombres par chunk : on
-   garde TOUT l'historique — c'est minuscule et c'est ce qui rend la
-   régénération d'un chunk ancien possible sans tout reconstruire. */
-export type Bound = { x: number; y: number; hd: number; h: number; wpIdx: number; hdDev: number; hdPsi: number };
+/* état d'entrée d'un chunk (position, cap, altitude du limiteur,
+   braquage précédent) — n°43 : le contrôleur émergent remplace le
+   plan de virages ; hdDev/hdPsi (wiggle/ψ des tables V4/V5)
+   disparaissent, steerPrev arrive (la régularité du braquage est
+   continue aux frontières). On garde TOUT l'historique — c'est
+   minuscule et c'est ce qui rend la régénération d'un chunk ancien
+   possible sans tout reconstruire. */
+export type Bound = { x: number; y: number; hd: number; h: number; wpIdx: number; steerPrev: number };
 
 /* ---- WAYPOINTS MACRO : l'ossature de l'itinéraire. Fonction PURE de
    (seed, totalKm) — mêmes waypoints au bit près. Tronçons de 18-45 km,
@@ -172,87 +188,117 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
   return wps;
 }
 
-/* SINUOSITÉ : 1 point de contrôle / 6,4 km, interpolation cosinus.
-   Fonction PURE de (seed, index global) — ne consomme PAS de PRNG,
-   identique à la régénération d'un chunk ancien. Portions calmes
-   alternent avec des portions sinueuses : la route respire. */
-const sinuHash = (seed: number, j: number) => {
-  const v = Math.sin(j * 127.1 + seed * 0.618) * 43758.5453;
-  return v - Math.floor(v);
-};
-function sinuAt(seed: number, gi: number): number {
-  const per = 800; // 6,4 km
-  const j0 = Math.floor(gi / per);
-  const t = gi / per - j0;
-  const w = (1 - Math.cos(Math.PI * t)) / 2;
-  return sinuHash(seed, j0) * (1 - w) + sinuHash(seed, j0 + 1) * w;
-}
-
 /* ============================================================
-   V4 — ONDULATION DE PLATE-FORME (l'échelle de la voiture)
+   n°43 — CONTRÔLEUR ÉMERGENT : la route vient de la topologie
    ============================================================
-   Constat mesuré sur la V3 : le volant se retourne 1-6 fois par
-   km seulement ; entre les items step = 0 EXACTEMENT et le relief
-   vertical ne vit qu'à 400+ m. Depuis le cockpit (300 m
-   visibles), la route est un arc uniforme : un fleuve tranquille.
-   PSI corrige cela : un méandre CONTINU, bande limitée, PUR de
-   (graine, index global) — PAS de PRNG (identique à la
-   régénération d'un chunk ancien, ADR 0004). Deux composantes :
-   lente (le serpent vu au loin, 0,5-0,7 km) + rapide (le grain
-   de la piste, 0,12-0,17 km). Amplitude en MÈTRES LATÉRAUX,
-   modulée par la sinuosité de portion : les portions calmes
-   ondulent aussi (c'est l'échelle voiture, pas la sinuosité
-   macro).
-
-   n°33 — PARAMÈTRES PAR FAMILLE gameplay (6) : l'amplitude de ψ
-   dérive du climat du chunk (zf = famAt à l'entrée). PIÈGE
-   (mesuré, corrigé) : les paramètres PAR FAMILLE versent un SAUT
-   permanent dans hdPsi à chaque frontière de famille — hdPsi est
-   une MARCHE ALÉATOIRE (jusqu'à −79° sur 10 000 km graine 12345)
-   et le chemin réel voyage sous le cap macro avec un décalage
-   d'équilibre LOOK·tan(hdPsi) ≈ 21 km. CORRECTIF : hdPsi est
-   RE-BASÉ à 0 quand la famille du chunk change (cf. buildChunk).
-
-   La correction de poursuite ne le voit PAS : psi est versé dans
-   hd ET dans hdPsi (accumulateur séparé) — hdDev reste l'exact
-   plan, donc menus et POI d'une même graine ne changent pas. */
-
-const PSI_LAT1 = [2.2, 1.6, 3.0, 2.6, 2.4, 2.0];   // m, composante lente — F0..F5
-const PSI_L1 = [600, 700, 500, 520, 460, 640];     // m, longueur d'onde lente
-const PSI_LAT2 = [0.8, 0.6, 1.2, 1.0, 1.0, 0.7];   // m, composante rapide
-const PSI_L2 = [150, 170, 120, 125, 120, 140];    // m, longueur d'onde rapide
-const psiPhase = (seed: number, c: number) => {
-  const v = Math.sin(c * 91.7 + seed * 0.318) * 43758.5453;
-  return (v - Math.floor(v)) * Math.PI * 2;
+   PILIERS (Tanguy) : (1) aucune typologie de virage forcée par
+   table — si la route doit serpenter davantage, c'est la TOPOLOGIE
+   qu'on enrichit (octaves fines du terrain) ; (2) la route SUIT le
+   relief de façon cohérente, avec des OUVRAGES (pont/tunnel) sur
+   les inclinaisons extrêmes seulement. À chaque pas de 8 m, le
+   contrôleur choisit parmi 13 caps candidats simulés sur 192 m
+   (limiteur d'altitude, budget de pente 8 %) au moindre coût :
+   hug (écart route/sol, saturé 12 m = ouvrage), steep (pente-max
+   de la fenêtre longue — contour), pur (poursuite macro pure
+   pursuit), smooth (régularité du braquage), laisse latérale vs
+   polyline, garde anti-croisement. ZÉRO PRNG dans la géométrie
+   (ADR 0004 renforcé). Calibré au banc (bench-n42-emergente,
+   config Z, 3 graines × 1000 km : 0 croisement exact, CI minSep
+   ≥ 26 km, enveloppe ≤ 3,8 km, pentes p95 = max = 8 %). */
+const ER = {
+  budget: 0.08,      // pente max de la ligne de route (limiteur vertical)
+  lookC: 24,         // sous-pas du lookahead (24 × 8 = 192 m)
+  roughW: 12,        // fenêtre courte (tissage fin — inactivée, cf. wRough)
+  cands: [-0.16, -0.10, -0.06, -0.03, -0.012, -0.006, 0,
+          0.006, 0.012, 0.03, 0.06, 0.10, 0.16],  // Δcap par pas (rad)
+  wHug: 1.0,         // poids écart route/sol
+  wPur: 8.0,         // poids écart au cap macro (rad²)
+  wSm: 9.0,          // poids régularité (dhd − dhdPrev)²
+  wZero: 0.05,       // préférence douce du cap droit
+  hugCap: 12,        // saturation du coût hug (m) — au-delà = ouvrage
+  gentleS: 0.01,     // pente du sol « douce » (1 %) — au-delà, contourner
+  wSteep: 600,       // poids pente-max fenêtre longue (traversée raide)
+  wRough: 0,         // poids rugosité fenêtre courte (tissage fin)
+  leash: 3000,       // laisse latérale max vs polyline waypoints (m)
+  avoidR: 350,       // garde douce : rayon d'avertissement (m)
+  wAvoid: 400,       // poids de la garde douce
+  causeway: 3,       // hauteur de la route au-dessus de la mer (m) — n°43 :
+                     // +3 remplace le +12 de HroadC (causeway bas)
+  lookWP: 4000,      // pure pursuit waypoints (m)
+  grace: 50,         // fenêtre de grâce anti-croisement (samples = 400 m d'arc)
+  lookWater: 2000,   // lookahead de la garde sur l'eau (m)
+  lookLand: 1600,    // lookahead de la garde à terre (m)
 };
-function psiAt(rt: Route, gi: number, fam: number): number {
-  const lat1 = PSI_LAT1[fam]!, L1 = PSI_L1[fam]!;
-  const lat2 = PSI_LAT2[fam]!, L2 = PSI_L2[fam]!;
-  const m = 0.6 + 0.8 * sinuAt(rt.seed, gi);
-  const s = gi * SEG;
-  return lat1 * m * (Math.PI * 2 / L1) * Math.sin(s * (Math.PI * 2 / L1) + psiPhase(rt.seed, 1))
-       + lat2 * m * (Math.PI * 2 / L2) * Math.sin(s * (Math.PI * 2 / L2) + psiPhase(rt.seed, 2));
+
+/* ---- mémoire anti-croisement : buckets de 250 m des segments commis.
+   Clé = bx·2²⁶ + by ; entrées plates [x0, y0, x1, y1, tag] où tag =
+   l'index d'échantillon ABSOLU de l'ARRIVÉE du segment. Append-only
+   (jamais évictée) : la régénération d'un chunk ancien réinsère des
+   doublons NEUTRES (min de distance et booléens d'intersection
+   inchangés), et les segments « futurs » sont ignorés par leur tag
+   (tag > iNow − grace) — la régénération reste bit à bit identique. */
+const AB = 250;
+const abk = (bx: number, by: number): number => bx * 67108864 + by;
+function pushSeg(hist: Map<number, number[]>, x0: number, y0: number, x1: number, y1: number, tag: number): void {
+  const k0 = abk(Math.floor(x0 / AB), Math.floor(y0 / AB));
+  const k1 = abk(Math.floor(x1 / AB), Math.floor(y1 / AB));
+  for (const kk of new Set([k0, k1])) {
+    let arr = hist.get(kk);
+    if (!arr) { arr = []; hist.set(kk, arr); }
+    arr.push(x0, y0, x1, y1, tag);
+  }
 }
-
-/* TF — OCTAVE VERTICALE RAPIDE PURE (détail voiture, style par
-   famille) : valeur ABSOLUE pure de (graine, index global) — continue
-   aux frontières de chunks, identique à la régénération (ADR 0004),
-   sans dérive. Amplitude par FAMILLE gameplay (n°33) : la dune reste
-   l'apanage du désert (F1), le grain pierre l'altitude (F4). */
-const FAST_AMP = [0.010, 0.100, 0.014, 0.018, 0.028, 0.012]; // par famille F0..F5
-const FAST_SCALE = 21;
-const fastHash = (seed: number, j: number) => {
-  const v = Math.sin(j * 269.5 + seed * 0.913) * 43758.5453;
-  return (v - Math.floor(v)) * 2 - 1;   // [-1, 1]
-};
-function fastAt(rt: Route, gi: number, fam: number): number {
-  const fk = FAST_AMP[fam]!;
-  const x = gi / 16.7;   // période ~134 m
-  const j0 = Math.floor(x);
-  const f = x - j0;
-  const t = f * f * (3 - 2 * f);
-  const a = fastHash(rt.seed, j0), b = fastHash(rt.seed, j0 + 1);
-  return fk * FAST_SCALE * (a + (b - a) * t);
+/* proximité douce : min distance d'un point au chemin ancien (au-delà
+   de la fenêtre de grâce en arrière ; le chemin récent — l'épingle —
+   est légitime, il revient PRÈS de son tracé sans le couper) */
+function avoidNear(hist: Map<number, number[]>, px: number, py: number, iNow: number, grace: number): number {
+  const bx = Math.floor(px / AB), by = Math.floor(py / AB);
+  let dmin = Infinity;
+  for (let dx = -2; dx <= 2; dx++) for (let dy = -2; dy <= 2; dy++) {
+    const arr = hist.get(abk(bx + dx, by + dy));
+    if (!arr) continue;
+    for (let q = 0; q < arr.length; q += 5) {
+      if (arr[q + 4]! > iNow - grace) continue;
+      const d = Math.hypot(arr[q]! - px, arr[q + 1]! - py);
+      if (d < dmin) dmin = d;
+    }
+  }
+  return dmin;
+}
+/* intersection exacte du segment candidat (x0,y0)→(x1,y1) vs chemin
+   ancien (au-delà de la fenêtre de grâce) — interdite. PIÈGES de
+   calibration (mesurés, bench-n42-emergente) :
+   - échantillonnage DENS (8 points) : un t=0.25 laissait un angle
+     mort 0-125 m près de la position sur l'eau — croisement km 333,
+     graine 42 ;
+   - bornes en MÈTRES (tmin = 1/len), pas en fraction : un croisement
+     rasant à 1-2 m de la position a tt≈0.0005 — exclu par l'ancien
+     seuil 0.001, la garde devenait aveugle au dernier pas (km 255.7,
+     graine 777). */
+function avoidCross(hist: Map<number, number[]>, x0: number, y0: number, x1: number, y1: number, iNow: number, grace: number): boolean {
+  const d1x = x1 - x0, d1y = y1 - y0;
+  const len = Math.hypot(d1x, d1y);
+  if (len < 0) return false;   // jamais
+  const tmin = 1 / len;
+  for (let t = 0.125; t <= 1.01; t += 0.125) {
+    const px = x0 + d1x * t, py = y0 + d1y * t;
+    const bx = Math.floor(px / AB), by = Math.floor(py / AB);
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++) {
+      const arr = hist.get(abk(bx + dx, by + dy));
+      if (!arr) continue;
+      for (let q = 0; q < arr.length; q += 5) {
+        if (arr[q + 4]! > iNow - grace) continue;
+        const sx1 = arr[q]!, sy1 = arr[q + 1]!, sx2 = arr[q + 2]!, sy2 = arr[q + 3]!;
+        const d2x = sx2 - sx1, d2y = sy2 - sy1;
+        const den = d1x * d2y - d1y * d2x;
+        if (Math.abs(den) < 1e-12) continue;
+        const tt = ((sx1 - x0) * d2y - (sy1 - y0) * d2x) / den;
+        const uu = ((sx1 - x0) * d1y - (sy1 - y0) * d1x) / den;
+        if (tt > tmin && tt < 1 - tmin && uu > 0.001 && uu < 0.999) return true;
+      }
+    }
+  }
+  return false;
 }
 
 export type PoiCursor = Record<PoiKind, number>; // prochain POI pend. par type
@@ -268,6 +314,7 @@ export type Route = {
   poiCur: PoiCursor[];       // poiCur[k] = curseurs POI à l'entrée du chunk k
   chunks: Map<number, Chunk>;
   order: number[];           // ordre d'insertion (éviction FIFO)
+  hist: Map<number, number[]>;   // n°43 : segments commis (garde anti-croisement)
 };
 
 /* ============================================================
@@ -325,142 +372,20 @@ function chunkRand(seed: number, k: number): () => number {
 }
 
 /* ============================================================
-   Construction d'un chunk — même générateur de virages que le proto
+   Construction d'un chunk — CONTRÔLEUR ÉMERGENT (n°43)
    ============================================================ */
 export function buildChunk(rt: Route, k: number): Chunk {
   const e = rt.bound[k]!;
-  const rand = chunkRand(rt.seed, k);
-  const noise = makeNoise(rand);
-  const noise2 = makeNoise(rand);
-  /* octave verticale RAPIDE (crêtes / creux à ~130 m) : la dune creuse
-     la pointe au désert, la tête de piste ondule en plaine. PRNG
-     SÉPARÉ du flux des menus : les items et POI d'une même graine ne
-     changent D'AUCUN BIT — le diff V4 est purement additif. */
-  const noise3 = makeNoise(mulberry32(((rt.seed ^ 0x70731733) | 0) + Math.imul(k + 1, 2246822519) | 0));
+  const rand = chunkRand(rt.seed, k);   // n°43 : les POI sont le SEUL consommateur
   const s0 = k * RCHUNK;
 
-  /* n°33 — FAMILLE DE PLAN du chunk : la classification dérive du CHAMP
-     à l'entrée (terrain.ts famAt) — le plan d'abscisse V2
-     (buildSchedule/biomeBlendR) est RETIRÉ. zf pilote le MENU de
-     virages (le caractère) et les paramètres ψ de tout le chunk ;
-     le REVÊTEMENT et l'étiquette biome[i] restent PAR POINT (continus). */
-  const zf = famAt(e.x, e.y, rt.seed);
-
   /* ---- paramètres de surface PAR ÉCHANTILLON (calculés dans la
-     boucle d'intégration, où la position est connue) ---- */
+     boucle du contrôleur, où la position est connue) ---- */
   const w = new Float64Array(RSAMP);
   const h = new Float64Array(RSAMP);
   const mua = new Float64Array(RSAMP);
   const crrA = new Float64Array(RSAMP);
   const biome = new Float64Array(RSAMP);
-  biome[0] = zf;
-  {
-    const sp = surfParams(e.x, e.y, rt.seed);
-    w[0] = sp.w; mua[0] = sp.mu; crrA[0] = sp.crr;
-  }
-
-  /* ---- plan de virages : LES MENUS DU PROTO, famille par famille.
-     Identique à buildRoad : droites longues au désert, chicanes en
-     forêt, épingles/lacets en altitude ; entrées/sorties par rampes
-     de clothoïde ; le cap se contrebalance dans le chunk (l'itinéraire
-     chemine sans spiraler sur 20 000 km). ---- */
-  let pi = 0;
-  let hdDev = e.hdDev;   // wiggle cumulé GLOBAL (borne par la bande dir())
-  const WP_WIGGLE_MAX = 1.10;   // borne de magnitude du wiggle (bande ±0,40 + débord)
-  const step = new Float64Array(RSAMP);
-  const dir = () => (hdDev > 0.40 ? -1 : hdDev < -0.40 ? 1 : rand() < 0.5 ? -1 : 1);
-  const writeCorner = (cvT: number, len: number, sgn: number, uBound = 0) => {
-    const ramp = 4;
-    /* uBound > 0 = DEMI-TOUR : la borne s'applique à la déflexion de l'ITEM
-       (une épingle = un objet borné en soi) ; sinon borne de POSITION wiggle */
-    let defl = 0;
-    /* BORNE DE WIGGLE : la bande dir() agit sur le wiggle TOTAL — un
-       item isolé (angle jusqu'à ~1,7 rad) ne doit pas emporter hdDev
-       au-delà de la bande, sinon la dérive latérale explose l'enveloppe
-       macro. Troncature du virage, AUCUN tirage PRNG modifié. */
-    for (let q = 0; q < len && pi < RSAMP; q++, pi++) {
-      const u = Math.min(1, (q + 1) / ramp, (len - q) / ramp);
-      const d = sgn * cvT * SEG * u;
-      if (uBound > 0 ? Math.abs(defl + d) > uBound
-                     : (Math.abs(hdDev + d) > WP_WIGGLE_MAX && hdDev * sgn > 0)) break;
-      step[pi] = d;
-      hdDev += d;
-      defl += d;
-    }
-  };
-  const writeStraight = (len: number) => {
-    for (let q = 0; q < len && pi < RSAMP; q++, pi++) step[pi] = 0;
-  };
-  /* COURANT : virage intermédiaire VISIBLE AU ZOOM (26-46° sur 0,5-1,2 km,
-     sagitta 100-400 m), longueur bornée pour ne pas vider le budget micro */
-  const writeCourant = (z: number) => {
-    const turn = 0.45 + rand() * 0.35;
-    const R = z === 0 ? 430 + rand() * 470
-          : z === 1 ? 560 + rand() * 590
-          : z === 2 ? 400 + rand() * 350
-          : z === 3 ? 400 + rand() * 300
-          : z === 4 ? 350 + rand() * 300
-          : 560 + rand() * 590;
-    const len = Math.max(60, Math.min(150, Math.round(turn * R / SEG)));
-    writeCorner(1 / R, len, dir());
-  };
-  while (pi < RSAMP - 30) {
-    const z = zf;
-    const sinu = sinuAt(rt.seed, k * RSAMP + pi);
-    const u = rand();
-    /* courant : tirage SÉPARÉ, fréquence modulée par la sinuosité —
-       les épingles du menu ne sont jamais remplacées */
-    const pCur = z === 2 || z === 3 ? 0.05 + 0.20 * sinu
-               : z === 4 ? 0.04 + 0.16 * sinu
-               : 0.05 + 0.22 * sinu;
-    const uCur = rand();
-    if (uCur < pCur) { writeCourant(z); continue; }
-    let kind: string;
-    /* MENUS PAR FAMILLE gameplay (n°33) — V2ter, avec droites
-       resserrées plaine/désert pour compenser la longueur mangée par
-       les courants. F0 plaine fluide · F1 désert droites · F2 forêt
-       serrée · F3 taïga nerveuse (épingles rares) · F4 altitude
-       lacets · F5 littoral coulé. */
-    if (z === 0) kind = u < 0.10 ? 'droite' : u < 0.30 ? 'grand' : u < 0.54 ? 'petit' : u < 0.80 ? 's' : u < 0.98 ? 'angle' : 'epingle';
-    else if (z === 1) kind = u < 0.08 ? 'droite' : u < 0.46 ? 'petit' : u < 0.74 ? 's' : u < 0.98 ? 'angle' : 'epingle';
-    else if (z === 2) kind = u < 0.08 ? 'droite' : u < 0.46 ? 'petit' : u < 0.74 ? 's' : u < 0.98 ? 'angle' : 'epingle';
-    else if (z === 3) kind = u < 0.18 ? 'droite' : u < 0.50 ? 'petit' : u < 0.78 ? 's' : u < 0.98 ? 'angle' : 'epingle';
-    else if (z === 4) kind = u < 0.06 ? 'droite' : u < 0.26 ? 'petit' : u < 0.50 ? 's' : u < 0.74 ? 'epingle' : 'lacets';
-    else kind = u < 0.42 ? 'droite' : u < 0.66 ? 'grand' : u < 0.92 ? 'petit' : 'angle';
-    if (kind === 'droite') {
-      /* portion calme → lignes plus LONGUES (×1 à ×1,6) */
-      const long = Math.round((z === 1 ? 26 + Math.floor(rand() * 36)
-                        : z === 5 ? 20 + Math.floor(rand() * 30)
-                        : z === 0 ? 8 + Math.floor(rand() * 12)
-                        : z === 4 ? 6 + Math.floor(rand() * 14)
-                                  : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
-      writeStraight(long);
-    }
-    else if (kind === 'grand') writeCorner(1 / (z === 0 ? 150 + rand() * 170 : z === 5 ? 160 + rand() * 140 : 145 + rand() * 135), 12 + Math.floor(rand() * 18), dir());
-    else if (kind === 'petit') writeCorner(1 / (z === 0 ? 120 + rand() * 100 : z === 2 || z === 3 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
-    else if (kind === 's') {
-      const cvS = 1 / (z === 4 ? 90 + rand() * 70 : z === 3 ? 110 + rand() * 90 : z === 0 ? 120 + rand() * 100 : 150 + rand() * 130);
-      const lS = 7 + Math.floor(rand() * 8);
-      const sgn = dir(); writeCorner(cvS, lS, sgn); writeCorner(cvS, lS, -sgn);
-    } else if (kind === 'angle') writeCorner(1 / (90 + rand() * 90), 14 + Math.floor(rand() * 12), dir());
-    else if (kind === 'lacets') {
-      const n = 2 + Math.floor(rand() * 2);        // 2-3 épingles en enfilade
-      let last = dir();
-      for (let u0 = 0; u0 < n && pi < RSAMP - 30; u0++) {
-        const R = 25 + rand() * 15;                // 25-40 m — l'apex à ~55-65 km/h
-        const tgt = 2.45 + rand() * 0.7;
-        const len = Math.ceil(tgt * R / SEG) + 4;  // 140-180° + les rampes
-        writeCorner(1 / R, len, last, tgt);
-        last = -last;                              // alternance gauche/droite
-        if (u0 < n - 1) writeStraight(4 + Math.floor(rand() * 8));  // 32-96 m entre épingles
-      }
-    }
-    else writeCorner(1 / (28 + rand() * 22), z === 4 ? 11 + Math.floor(rand() * 11) : 9 + Math.floor(rand() * 9), dir(), 2.45 + rand() * 0.7);
-  }
-  writeStraight(RSAMP - pi);
-
-  /* ---- géométrie : cap, plan, altitude (bruit lissé + retour doux
-     à la moyenne : des collines vivantes, sans dérive sur 20 000 km) ---- */
   const hd = new Float64Array(RSAMP);
   const xs = new Float64Array(RSAMP);
   const zs = new Float64Array(RSAMP);
@@ -468,95 +393,149 @@ export function buildChunk(rt: Route, k: number): Chunk {
   xs[0] = 0;
   zs[0] = 0;
   h[0] = e.h;
-  /* n°25 : l'altitude = Hroad(position) + fastAt — l'ancien accumulateur
-     de bruit d'abscisse (inc/incS, H_PULL) a été supprimé au n°26.
-     n°33 : HroadC — la route ne plonge jamais sous la mer (causeway). */
+  biome[0] = famAt(e.x, e.y, rt.seed);
+  {
+    const sp = surfParams(e.x, e.y, rt.seed);
+    w[0] = sp.w; mua[0] = sp.mu; crrA[0] = sp.crr;
+  }
+
+  /* ---- état du contrôleur (continué du chunk précédent via Bound) ---- */
   const wps = rt.wps;
-  const KH = 0.12, CMAX = 0.008;   // gain de poursuite / virage max par pas (R ≈ 1 km)
-  const LOOK = 4000;               // n°33 : pure pursuit — viser la projection
-                                   // avancée de LOOK m sur le SEGMENT ACTIF. Le
-                                   // tracker « vise le waypoint » ne ramenait
-                                   // JAMAIS vers la polyline (décalages latéraux
-                                   // persistants 10-20 km, enveloppe 21,4 km
-                                   // mesurés) ; sweep 2500/4000/6000 : tous
-                                   // tiennent, 4000 retenu (cornes macro douces)
+  const hist = rt.hist;
+  const sea = WP.seaLevel;
+  let x = e.x, y = e.y, alt = e.h, hdC = e.hd, steerPrev = e.steerPrev ?? 0;
   let wpIdx = e.wpIdx;
-  /* la phase de plan a accumulé le wiggle PRÉVISIONNEL du chunk (bande
-     dir()) ; l'intégration repart de l'état d'ENTRÉE et le re-accumule
-     échantillon par échantillon — pas de double comptage */
-  hdDev = e.hdDev;
-  /* V4 : l'offset psi cumulé se porte dans un accumulateur SÉPARÉ —
-     hdDev reste l'exact plan (menus + POI d'une même graine ne
-     changent D'AUCUN BIT), la correction voit le cap macro seul.
-     n°33 : RE-BASE — les paramètres ψ sont PAR FAMILLE : chaque
-     frontière de famille verse un saut permanent ; sans re-base,
-     hdPsi est une marche aléatoire (−79° sur 10 000 km mesurés,
-     décalage d'équilibre LOOK·tan(hdPsi) ≈ 21 km). */
-  let hdPsi = e.hdPsi ?? 0;   // ?? 0 : robustesse
-  if (k > 0 && famAt(rt.bound[k - 1]!.x, rt.bound[k - 1]!.y, rt.seed) !== zf) hdPsi = 0;
+
+  /* la cible d'altitude du limiteur : le relief RÉEL (H, octaves fines
+     n°43 comprises), causeway à seaLevel+3 m sur l'eau */
+  const target = (px: number, py: number): number => {
+    const t = H(px, py, rt.seed);
+    return t < sea ? sea + ER.causeway : t;
+  };
+  /* avance le limiteur d'un pas de 8 m le long d'un cap ; renvoie le
+     coût hug (écart route/cible), l'altitude limiteur, la pente du sol
+     rencontrée (pas de pente sous l'eau : le causeway est à part) */
+  const simSeg = (cx: number, cy: number, hd2: number, a: number, prevT: number | null) => {
+    const nx = cx + Math.cos(hd2) * SEG, ny = cy + Math.sin(hd2) * SEG;
+    const t = target(nx, ny);
+    const na = a + Math.max(-ER.budget * SEG, Math.min(ER.budget * SEG, t - a));
+    const slope = prevT !== null && t >= sea && prevT >= sea ? Math.abs(t - prevT) / SEG : 0;
+    return { cost: Math.abs(t - na), a: na, nx, ny, slope, t };
+  };
+
   for (let i = 0; i < RSAMP; i++) {
-    /* ---- avancement du waypoint cible : 3 tests, du proche au géométrique.
-       NE PAS « simplifier » en un seul test dot<0 : le test dot<0 nu
-       déclenche jusqu'à 26 km AVANT les sommets serrés et fait couper le
-       coin à 11 km de la polyline (mesuré) — bug historique.
-       n°33 : test 2 reserré à 15 km (le pure pursuit rend le test
-       géométrique plus vif — mesuré, 4 graines, enveloppe saine). */
+    const gi = k * RSAMP + i;   // index d'échantillon GLOBAL (tags hist)
+
+    /* ---- avancement du waypoint cible : 3 tests, du proche au
+       géométrique (n°33, inchangé — ne PAS simplifier en dot<0 seul) ---- */
     while (wpIdx < wps.length - 1) {
       const cur = wps[wpIdx]!, nxt = wps[wpIdx + 1]!;
-      const px = e.x + xs[i]!, py = e.y + zs[i]!;
-      const dcx = cur.x - px, dcy = cur.y - py;
+      const dcx = cur.x - x, dcy = cur.y - y;
       const d2 = dcx * dcx + dcy * dcy;
-      let adv = d2 < 5000 * 5000;                                   // 1. dist < 5 km
-      if (!adv && wpIdx > 0 && d2 < 15000 * 15000) {                 // 2. plan du sommet franchi
+      let adv = d2 < 5000 * 5000;
+      if (!adv && wpIdx > 0 && d2 < 15000 * 15000) {
         const inx = cur.x - wps[wpIdx - 1]!.x, iny = cur.y - wps[wpIdx - 1]!.y;
-        if ((px - cur.x) * inx + (py - cur.y) * iny > 0) adv = true;
+        if ((x - cur.x) * inx + (y - cur.y) * iny > 0) adv = true;
       }
       if (!adv && d2 < 8000 * 8000 &&
-          (nxt.x - px) * dcx + (nxt.y - py) * dcy < 0) adv = true;   // 3. repli borné
+          (nxt.x - x) * dcx + (nxt.y - y) * dcy < 0) adv = true;
       if (adv) wpIdx++; else break;
     }
-    /* n°33 — PURE PURSUIT : viser la PROJECTION de la position sur le
-       segment actif wps[wpIdx-1]→wps[wpIdx], avancée de LOOK m (clamp
-       à la fin du segment) ; wpIdx 0 (départ) : viser le waypoint. */
+    /* ---- pure pursuit sur le segment actif (n°33, inchangé) ---- */
     let tx: number, ty: number;
     if (wpIdx === 0) { tx = wps[0]!.x; ty = wps[0]!.y; }
     else {
       const a = wps[wpIdx - 1]!, b2 = wps[wpIdx]!;
       const dx = b2.x - a.x, dy = b2.y - a.y;
       const L = Math.hypot(dx, dy) || 1;
-      let t = ((e.x + xs[i]! - a.x) * dx + (e.y + zs[i]! - a.y) * dy) / (L * L);
-      t = Math.max(0, Math.min(1, t + LOOK / L));
+      let t = ((x - a.x) * dx + (y - a.y) * dy) / (L * L);
+      t = Math.max(0, Math.min(1, t + ER.lookWP / L));
       tx = a.x + dx * t; ty = a.y + dy * t;
     }
-    const hdT = Math.atan2(ty - (e.y + zs[i]!), tx - (e.x + xs[i]!));
-    /* DÉ-COUPLAGE : la correction voit le cap MACRO (hd - hdDev), PAS le
-       cap total — le wiggle ondole librement autour de l'axe macro sans
-       être écrasé par le tracker (mesuré : bruit local +40 %). */
-    let corr = wpWrap(hdT - (hd[i]! - hdDev - hdPsi)) * KH;
-    if (corr > CMAX) corr = CMAX; else if (corr < -CMAX) corr = -CMAX;
-    if (i + 1 < RSAMP) {
-      /* V4 : le méandre psi est versé dans hd ET dans hdPsi — la
-         correction macro ne le voit pas, il ondule librement. Pur de
-         (graine, gi) : régénération d'un chunk ancien identique.
-         n°33 : ψ par FAMILLE (zf, constante du chunk). */
-      const dpsi = psiAt(rt, k * RSAMP + i + 1, zf) - psiAt(rt, k * RSAMP + i, zf);
-      hd[i + 1] = hd[i]! + step[i]! + corr + dpsi;
-      xs[i + 1] = xs[i]! + Math.cos(hd[i]!) * SEG;
-      zs[i + 1] = zs[i]! + Math.sin(hd[i]!) * SEG;
-      /* n°33 : surface + étiquette PAR POINT (continues) : la famille,
-         le grip, la largeur et le roulement se lisent au CHAMP à la
-         position exacte de l'échantillon. */
-      const px1 = e.x + xs[i + 1]!, py1 = e.y + zs[i + 1]!;
-      const fam1 = famAt(px1, py1, rt.seed);
-      biome[i + 1] = fam1;
-      const sp = surfParams(px1, py1, rt.seed);
-      w[i + 1] = sp.w; mua[i + 1] = sp.mu; crrA[i + 1] = sp.crr;
-      h[i + 1] = HroadC(px1, py1, rt.seed) + fastAt(rt, k * RSAMP + i + 1, fam1);
-      hdDev += step[i]!;
-      hdPsi += dpsi;
-    } else {
-      hdDev += step[i]!;
+    const hdMac = Math.atan2(ty - y, tx - x);
+    /* ---- laisse latérale vs polyline (le couloir ne se referme pas
+       hors des plis de waypoints) ---- */
+    let leashPen = 0;
+    {
+      const a = wps[Math.max(0, wpIdx - 1)]!, b2 = wps[Math.min(wps.length - 1, wpIdx)]!;
+      const dx = b2.x - a.x, dy = b2.y - a.y, L2 = dx * dx + dy * dy;
+      let t = L2 === 0 ? 0 : ((x - a.x) * dx + (y - a.y) * dy) / L2;
+      t = Math.max(0, Math.min(1, t));
+      const dLat = Math.hypot(a.x + dx * t - x, a.y + dy * t - y);
+      if (dLat > ER.leash) leashPen = 400 * (dLat - ER.leash);
     }
+    /* ---- choix du cap candidat au moindre coût ---- */
+    let best: { cost: number; d: number } | null = null;
+    const dOld = new Float64Array(ER.cands.length);
+    const overWater = H(x, y, rt.seed) < sea;
+    const gl = overWater ? ER.lookWater : ER.lookLand;
+    for (let ci = 0; ci < ER.cands.length; ci++) {
+      const d = ER.cands[ci]!;
+      const hd2 = hdC + d;
+      let cx = x, cy = y, a = alt, hug = 0, steep = 0, prevT = target(x, y);
+      for (let j = 0; j < ER.lookC; j++) {
+        const r = simSeg(cx, cy, hd2, a, prevT);
+        cx = r.nx; cy = r.ny; a = r.a; prevT = r.t;
+        hug += Math.min(r.cost, ER.hugCap);
+        if (r.slope > steep) steep = r.slope;
+      }
+      const pur = wpWrap(hd2 - hdMac);
+      const steepPen = Math.max(0, steep - ER.gentleS) ** 2 * ER.wSteep;
+      /* garde anti-croisement, deux niveaux :
+         - intersection exacte du LOOKAHEAD vs chemin ancien : interdit
+           (1e7). Le lookahead est LONG (2 km sur l'eau, 1,6 km à
+           terre) : sans signal de relief, la poursuite macro piège à
+           l'échelle du km — l'échappatoire de 192 m arrive trop tard
+           (30 croisements mesurés graine 42) et un pli qui se referme
+           doit être vu AVANT la boucle (poche km 250, graine 777) ;
+         - proximité douce (rayon avoidR) : avertit TÔT, la route dérive
+           loin de son ancien tracé avant d'être piégée. La fenêtre de
+           grâce (grace = 400 m d'arc) couvre les épingles. */
+      let avoidPen = 0;
+      const lx = x + Math.cos(hd2) * gl, ly = y + Math.sin(hd2) * gl;
+      if (avoidCross(hist, x, y, lx, ly, gi, ER.grace)) avoidPen += 1e7;
+      const dOld1 = avoidNear(hist, x + Math.cos(hd2) * 96, y + Math.sin(hd2) * 96, gi, ER.grace);
+      dOld[ci] = dOld1;
+      if (dOld1 < ER.avoidR) avoidPen += ER.wAvoid * (1 - dOld1 / ER.avoidR);
+      const cost = ER.wHug * hug / ER.lookC + ER.wPur * pur * pur
+                 + ER.wSm * (d - steerPrev) ** 2 + ER.wZero * Math.abs(d)
+                 + steepPen + leashPen * pur * pur + avoidPen;
+      if (!best || cost < best.cost) best = { cost, d };
+    }
+    /* évasion en 2 passes : si TOUS les candidats coupent (best ≥ 1e7),
+       on ne départage PAS au coût global (il choisit mal — mesuré) :
+       on prend le cap qui s'éloigne le PLUS du chemin ancien. PAS de
+       récompense : la pénalité 1e7 reste, les autres candidats
+       redeviennent interdits dès qu'un non-coupant réapparaît. */
+    if (best && best.cost >= 1e7) {
+      let esc = -1, dMax = -1;
+      for (let ci = 0; ci < ER.cands.length; ci++) {
+        if (dOld[ci]! > dMax) { dMax = dOld[ci]!; esc = ci; }
+      }
+      if (esc >= 0) best = { cost: 0, d: ER.cands[esc]! };
+    }
+    /* ---- commit : un pas de 8 m ; le segment commis entre dans la
+       mémoire anti-croisement (tag = index ABSOLU d'arrivée) ---- */
+    const d = best!.d;
+    const r = simSeg(x, y, hdC + d, alt, null);
+    pushSeg(hist, x, y, r.nx, r.ny, gi + 1);
+    hdC += d;
+    alt = r.a;
+    x = r.nx; y = r.ny;
+    if (i + 1 < RSAMP) {
+      hd[i + 1] = hdC;
+      xs[i + 1] = x - e.x;
+      zs[i + 1] = y - e.y;
+      h[i + 1] = alt;
+      biome[i + 1] = famAt(x, y, rt.seed);
+      const sp = surfParams(x, y, rt.seed);
+      w[i + 1] = sp.w; mua[i + 1] = sp.mu; crrA[i + 1] = sp.crr;
+    } else {
+      /* l'état de SORTIE (après le pas RSAMP-1 → RSAMP) est l'entrée du
+         chunk suivant — le contrôleur est CONTINU aux frontières */
+      rt.bound[k + 1] = { x, y, hd: hdC, h: alt, wpIdx, steerPrev: d };
+    }
+    steerPrev = d;
   }
 
   /* ---- POI : le curseur global de chaque type avance dans le chunk ---- */
@@ -578,16 +557,9 @@ export function buildChunk(rt: Route, k: number): Chunk {
   }
   pois.sort((a, b) => a.s - b.s);
 
-  /* ---- état de sortie : l'entrée du chunk suivant (gardé pour toujours) ---- */
-  rt.bound[k + 1] = {
-    x: e.x + xs[RSAMP - 1]!,
-    y: e.y + zs[RSAMP - 1]!,
-    hd: hd[RSAMP - 1]!,
-    h: h[RSAMP - 1]!,
-    wpIdx,
-    hdDev,
-    hdPsi,
-  };
+  /* ---- état de sortie POI : le curseur du chunk suivant (l'état du
+     contrôleur — position, cap, altitude, braquage — est passé dans
+     rt.bound[k+1] PAR LA BOUCLE, au dernier pas commis) ---- */
   rt.poiCur[k + 1] = cursor;
 
   /* ---- PONTS et TUNNELS TOPOGRAPHIQUES (n°25) : l'écart route/terrain
@@ -651,14 +623,14 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     totalKm,
     finishS: totalKm * 1000,
     nChunks,
-    bound: [{ x: 0, y: 0, hd: 0, h: HroadC(0, 0, seed), wpIdx: 0, hdDev: 0, hdPsi: 0 }],
+    bound: [{ x: 0, y: 0, hd: 0, h: Math.max(H(0, 0, seed), WP.seaLevel + ER.causeway), wpIdx: 1, steerPrev: 0 }],
     wps: buildWaypoints(seed, totalKm),
     poiDensity,
     poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],
     chunks: new Map(),
     order: [],
+    hist: new Map(),
   };
-  rt.bound[0]!.h = HroadC(0, 0, seed) + fastAt(rt, 0, famAt(0, 0, seed)); // géographie + détail voiture dès le mètre 0
   return rt;
 }
 

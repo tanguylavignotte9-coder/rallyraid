@@ -10,7 +10,7 @@ import {
   aggrOf, AGG, defaultPlan,
   DEFAULT_CONFIG, type RaceConfig, type RaceCar, type Aggression,
 } from '../core/race.ts';
-import { CAR_L } from '../core/engine.ts';
+import { CAR_L, CAR_D, EDGE_MARGIN } from '../core/engine.ts';
 
 const EPOCH = Date.UTC(2026, 9, 14, 10, 0, 0);
 
@@ -31,14 +31,17 @@ function race2cars(seed: number, aggression: Aggression) {
 }
 
 /* place B derrière A à `gap` m, A plus lente de `dv` m/s, dans une
-   chaussée large (on cherche un point de plaine) : le duel y est
-   géométriquement possible */
+   chaussée où le duel est VRAIMENT possible (hwDuel = wAt − EDGE_MARGIN
+   ≥ CAR_D des deux côtés : n°43 — l'ancienne porte 2·hwDuel ≥ 2,35
+   était plus faible que la vraie condition d'attaque et tombait parfois
+   sur une section étroite (wAt 2,31 < 3,10) où aucune manœuvre ne peut
+   partir). */
 function placePair(race: ReturnType<typeof race2cars>, gap: number, dv: number) {
   const [a, b] = race.cars as [RaceCar, RaceCar];
-  /* cherche un s où la chaussée permet un côte à côte (2*hwDuel >= CAR_D) */
+  /* cherche un s où la chaussée permet un côte à côte réel */
   let s = 2000;
   for (; s < 100_000; s += 500) {
-    if (2 * (race.trk.wAt(s) - 1.05) >= 2.35 && 2 * (race.trk.wAt(s + gap) - 1.05) >= 2.35) break;
+    if (race.trk.wAt(s) - EDGE_MARGIN >= CAR_D && race.trk.wAt(s + gap) - EDGE_MARGIN >= CAR_D) break;
   }
   a.s = s; a.v = 30; a.d = 0; a.st = 'run';
   b.s = s - gap; b.v = 30 + dv; b.d = 0; b.st = 'run';

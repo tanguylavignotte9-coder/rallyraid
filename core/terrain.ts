@@ -90,10 +90,23 @@ function vnoise(x: number, y: number, seed: number, so: number): number {
 const oct = (lam: number, amp: number, so: number, x: number, y: number, seed: number, k = 1) =>
   k * amp * (vnoise(x / lam, y / lam, seed, so) * 2 - 1);
 
+/* n°43 — OCTAVES FINES DE TOPOLOGIE : le relief à l'échelle de la
+   voiture (pente ~7,5 % > seuil doux 1 % du contrôleur de route →
+   la route émergente TISSE, banc bench-n42-emergente). Ajoutées à
+   H SEULEMENT : Hroad/Hmacro (donc famAt, climats, mer) ne les voient
+   PAS — la classification gameplay est inchangée. Calibration proto
+   n°42 : λ160×4 m + λ60×1,5 m — sous cette énergie la route
+   émergente est une autoroute (volant 60°/km mesuré), au-dessus elle
+   délire. Constantes en dur (PAS des réglages admin n°42). */
+export const FINE1_LAM = 160, FINE1_AMP = 4.0, FINE1_SO = 505;
+export const FINE2_LAM = 60, FINE2_AMP = 1.5, FINE2_SO = 606;
+
 /* terrain environnant (m) */
 export function H(x: number, y: number, seed: number): number {
   return oct(WP.lam1, WP.amp1, 101, x, y, seed) + oct(WP.lam2, WP.amp2, 202, x, y, seed)
-       + oct(WP.lam3, WP.amp3, 303, x, y, seed) + oct(WP.lam4, WP.amp4, 404, x, y, seed);
+       + oct(WP.lam3, WP.amp3, 303, x, y, seed) + oct(WP.lam4, WP.amp4, 404, x, y, seed)
+       + oct(FINE1_LAM, FINE1_AMP, FINE1_SO, x, y, seed)
+       + oct(FINE2_LAM, FINE2_AMP, FINE2_SO, x, y, seed);
 }
 
 /* plateforme routière (m), n°32 : la route suit les collines O3 à

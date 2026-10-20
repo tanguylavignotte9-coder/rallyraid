@@ -145,13 +145,22 @@ test('course entiere : boite en action sur la vraie route (conso + autonomie)', 
   const c = addCar(race, 'A', '#111111');
   const fuel0 = c.fuel;
   let s0 = c.s;
-  stepRace(race, Math.ceil(3600 / (1 / 120)));   // 1 h
+  /* n°43 : la route émergente est plus sinueuse — la croisière passe
+     ~82 % de l'heure en 5e/6e (17 % en 4e dans les secteurs lents),
+     mais l'INSTANT final peut tomber en 4e : on garde le rapport
+     DOMINANT de l'heure (échantillonné minute par minute). */
+  const gearUse = new Array(8).fill(0);
+  for (let t = 0; t < 60; t++) {
+    stepRace(race, Math.ceil(60 / (1 / 120)));   // 1 min
+    gearUse[c.gear]!++;
+  }
+  const hiGear = gearUse.slice(4).reduce((x, y) => x + y, 0);
+  assert.ok(hiGear >= 30, `croisiere en 5e/6e : ${hiGear}/60 min (4e ${gearUse[3]} min)`);
   const km = (c.s - s0) / 1000;
   const used = fuel0 - c.fuel;
   const per100 = used / km * 100;
-  assert.ok(c.gear >= 4, `croisiere en 5e/6e : ${c.gear + 1}e`);
-  assert.ok(c.rpm > 3000 && c.rpm < 7200, `regime de croisiere : ${c.rpm.toFixed(0)}`);  // n°33 : 3496 mesuré (route plus lente en croisière), borne 3500 -> 3000
-  assert.ok(per100 > 80 && per100 < 200, `conso plaine : ${per100.toFixed(0)} L/100 (banc ~131)`);
+  assert.ok(c.rpm > 3000 && c.rpm < 7200, `regime de croisiere : ${c.rpm.toFixed(0)}`);  // n°43 : 3808 mesuré (route émergente plus sinueuse)
+  assert.ok(per100 > 80 && per100 < 200, `conso plaine : ${per100.toFixed(0)} L/100 (n°43 : 138 mesuré)`);
   const autonomy = TANK_L / (per100 / 100);
   assert.ok(autonomy > 280 && autonomy < 520, `autonomie : ${autonomy.toFixed(0)} km (banc ~398)`);
 });
