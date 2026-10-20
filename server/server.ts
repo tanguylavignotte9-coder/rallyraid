@@ -119,8 +119,11 @@ function loadRace(): Race {
 
 const race = loadRace();
 let saveAcc = 0;
-let snapshot = buildSnapshot();
+/* n°32-fix : speedFactor AVANT le 1er buildSnapshot — un let lu dans
+   buildSnapshot (snapshot.speed) APRÈS sa déclaration = ReferenceError
+   TDZ au démarrage (constaté sur installation propre). */
 let speedFactor = 1;   // n°32 : multiplicateur de temps (super utilisateur)
+let snapshot = buildSnapshot();
                        // ×1/×2/×5/×10 — les RAFALES font speedFactor× plus de pas.
                        // ADR 0004 intact : stepRace est une boucle pure, tout
                        // découpage en pas est bit à bit identique (cf. commentaire
