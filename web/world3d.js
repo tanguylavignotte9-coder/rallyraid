@@ -584,7 +584,7 @@ function buildTerrain(group, d) {
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   mesh.receiveShadow = shadowsOn;
   group.add(mesh);
 }
@@ -678,7 +678,7 @@ function buildMidFar(group, d) {
   geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   geo.setIndex(idx);
   geo.computeVertexNormals();
-  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }));
   mesh.receiveShadow = shadowsOn;
   mesh.frustumCulled = false;
   group.add(mesh);
@@ -988,7 +988,7 @@ function buildWater(group, d) {
      route frôle ou traverse la côte ; la chaussée F5 la survole
      (HroadC = SEA_SL + 12). */
   const mid = pts[Math.floor(pts.length / 2)];
-  const seaGeo = new THREE.CircleGeometry(2400, 24);
+  const seaGeo = new THREE.CircleGeometry(4800, 24);
   seaGeo.rotateX(-Math.PI / 2);
   const sea = new THREE.Mesh(seaGeo, water);
   sea.position.set(mid.x, SEA_SL, mid.y);
@@ -1542,8 +1542,9 @@ function updateSky() {
 
   const weather = (car?.weather ?? 'dry') === 'rain';
   if (weather) { fogNear = 40; fogFar = 600; sky.multiplyScalar(0.55); }
+  fogFar = Math.min(fogFar, 2300);   /* n°32 : le fog couvre le bord L1 (2384 m) */
   scene.background = sky;
-  scene.fog.color.copy(sky).lerp(new THREE.Color(FAM_FOG[b] ?? 0xcfe8f2), 0.4);
+  scene.fog.color.copy(sky);
   scene.fog.near = fogNear;
   scene.fog.far = fogFar;
 
