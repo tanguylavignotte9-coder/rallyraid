@@ -24,6 +24,7 @@ import {
   type Plan, type Race, type RaceCar, type RaceConfig, type TireKind,
 } from '../core/race.ts';
 import { makeRoute, routeTrack, RCHUNK, RSAMP } from '../core/route.ts';
+import { setWorldParams, WORLD_DEFAULT, WORLD_BOUNDS, type WorldParams } from '../core/terrain.ts';
 import { AccountStore, hashPassword, randomPassword, type Level } from './accounts.ts';
 
 const PORT = Number(process.env.RALLY_PORT ?? 8787);
@@ -118,6 +119,11 @@ function loadRace(): Race {
 }
 
 const race = loadRace();
+/* n°42 : appliquer les paramètres monde de la course PERSISTÉE avant
+   TOUT usage du terrain (buildSnapshot suit — leçon n°32-fix : un état
+   lu par une fonction appelée au niveau du module doit être prêt AVANT ;
+   TDZ au démarrage sinon). Course fraîche : makeRace l'a déjà fait. */
+setWorldParams(race.config.world);
 let saveAcc = 0;
 /* n°32-fix : speedFactor AVANT le 1er buildSnapshot — un let lu dans
    buildSnapshot (snapshot.speed) APRÈS sa déclaration = ReferenceError
@@ -204,6 +210,57 @@ function publicCar(c: RaceCar, i: number): PublicCar {
   };
 }
 
+/* n°42 — payload de l'explorateur de graines (graine, km, MONDE courant) :
+   factored pour être réutilisé par l'aperçu admin avec des paramètres
+   TEMPORAIRES (aucune sauvegarde, restauration try/finally). */
+function seedmapPayload(seed: number, totalKm: number) {
+  const rt = makeRoute(seed, totalKm);
+  const trk = routeTrack(rt);
+  const step = 2000;
+  const pts: { x: number; y: number; h: number; b: number }[] = [];
+  for (let s = 0; s < rt.finishS; s += step) {
+    const p = trk.roadPoint(s);
+    pts.push({ x: p.x, y: p.y, h: trk.heightAt(s), b: Math.floor(trk.biomeAt(s)) });
+  }
+  const kmBiome = [0, 0, 0, 0, 0, 0];
+  for (const p of pts) kmBiome[p.b] += step / 1000;
+  let epingles = 0, serres = 0, rapides = 0;
+  let maxRun = 0, run = 0;
+  for (let s = 0; s < rt.finishS; s += 8) {
+    const cv = Math.abs(trk.cvAt(s));
+    if (cv > 0.02) epingles++;
+    else if (cv > 0.005) serres++;
+    else if (cv > 0.001) rapides++;
+    if (cv < 1e-4) { run += 8; if (run > maxRun) maxRun = run; } else run = 0;
+  }
+  let nPoi = 0;
+  for (let s = 0; s < rt.finishS; s += 1000) {
+    for (const p of trk.poisAhead(s, 1000)) nPoi++;
+  }
+  return {
+    seed, totalKm, pts, kmBiome,
+    turns: { epingles, serres, rapides, plusLongueDroite: maxRun },
+    poiPer100km: +(nPoi / (totalKm / 100)).toFixed(1),
+    altMin: Math.min(...pts.map((p) => p.h)),
+    altMax: Math.max(...pts.map((p) => p.h)),
+  };
+}
+
+/* n°42 — valide les paramètres monde d'un reset : objet COMPLET clampé
+   aux bornes (à persister tel quel), ou undefined (monde par défaut).
+   NaN/infini → valeur par défaut (jamais 0 : lam1 = 0 casserait le
+   bruit). */
+function clampWorld(p?: Partial<WorldParams>): WorldParams | undefined {
+  if (!p) return undefined;
+  const w = { ...WORLD_DEFAULT, ...p };
+  for (const k of Object.keys(WORLD_DEFAULT) as (keyof WorldParams)[]) {
+    const lo = WORLD_BOUNDS[k][0], hi = WORLD_BOUNDS[k][1];
+    const v = w[k];
+    w[k] = Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : WORLD_DEFAULT[k];
+  }
+  return w;
+}
+
 function buildSnapshot() {
   const ranked = rankCars(race);
   /* HEURE décimale de Paris (0-24) : pilote le cycle jour/nuit 3D.
@@ -222,6 +279,7 @@ function buildSnapshot() {
     seed: race.seed,
     startEpochMs: race.config.startEpochMs,
     maxCars: race.config.maxCars,
+    world: race.config.world ?? WORLD_DEFAULT,   // n°42 : le rendu (jeu + spectateur) applique via setData
     cars: ranked.map((c, i) => publicCar(c, i)),
   };
 }
@@ -689,6 +747,7 @@ const server = http.createServer(async (req, res) => {
           survivalHours: Math.max(1, Number(body.survivalHours ?? 24)),
           poiDensity: Math.max(0.2, Math.min(3, Number(body.poiDensity ?? 1))),
           maxCars: Math.max(2, Math.min(40, Number(body.maxCars ?? 40))),
+          world: clampWorld(body.world ?? race.config.world),
         };
         const fresh = makeRace(cfg);
         /* les comptes restent ; les voitures sont neuves — les joueurs
@@ -713,40 +772,28 @@ const server = http.createServer(async (req, res) => {
       if (url.pathname === '/api/admin/seedmap' && req.method === 'GET') {
         const seed = Number(url.searchParams.get('seed') ?? 42);
         const totalKm = Math.min(5000, Math.max(50, Number(url.searchParams.get('km') ?? race.totalKm)));
-        const rt = makeRoute(seed, totalKm);
-        const trk = routeTrack(rt);
-        /* un point tous les ~2 km (vue de dessus + altitude + biome) */
-        const step = 2000;
-        const pts: { x: number; y: number; h: number; b: number }[] = [];
-        for (let s = 0; s < rt.finishS; s += step) {
-          const p = trk.roadPoint(s);
-          pts.push({ x: p.x, y: p.y, h: trk.heightAt(s), b: Math.floor(trk.biomeAt(s)) });
+        sendJSON(res, 200, seedmapPayload(seed, totalKm));
+        return;
+      }
+      /* n°42 — CONSTANTES DU GÉNÉRATEUR DE MONDE : lecture (valeurs de
+         la course + bornes pour l'UI) et APERÇU sans sauvegarde (même
+         code de génération, paramètres appliqués TEMPORAIREMENT puis
+         restaurés — la course en cours ne change pas d'un pixel). */
+      if (url.pathname === '/api/admin/world' && req.method === 'GET') {
+        sendJSON(res, 200, { world: race.config.world ?? WORLD_DEFAULT, bounds: WORLD_BOUNDS });
+        return;
+      }
+      if (url.pathname === '/api/admin/world-preview' && req.method === 'POST') {
+        const body = JSON.parse(await readBody(req) || '{}') as { seed?: number; totalKm?: number; world?: Partial<WorldParams> };
+        const seed = Math.floor(Number(body.seed ?? race.config.seed)) || 42;
+        const totalKm = Math.min(5000, Math.max(50, Number(body.totalKm ?? race.config.totalKm)));
+        const keep = { ...race.config.world };
+        setWorldParams(body.world);
+        try {
+          sendJSON(res, 200, seedmapPayload(seed, totalKm));
+        } finally {
+          setWorldParams(keep);
         }
-        /* km par FAMILLE gameplay (6 — n°33) */
-        const kmBiome = [0, 0, 0, 0, 0, 0];
-        for (const p of pts) kmBiome[p.b] += step / 1000;
-        /* virages par catégorie : échantillonnage de la courbure */
-        let epingles = 0, serres = 0, rapides = 0;
-        let maxRun = 0, run = 0;
-        for (let s = 0; s < rt.finishS; s += 8) {
-          const cv = Math.abs(trk.cvAt(s));
-          if (cv > 0.02) epingles++;
-          else if (cv > 0.005) serres++;
-          else if (cv > 0.001) rapides++;
-          if (cv < 1e-4) { run += 8; if (run > maxRun) maxRun = run; } else run = 0;
-        }
-        /* densité POI (même curseur que la course, sans voitures) */
-        let nPoi = 0;
-        for (let s = 0; s < rt.finishS; s += 1000) {
-          for (const p of trk.poisAhead(s, 1000)) nPoi++;
-        }
-        sendJSON(res, 200, {
-          seed, totalKm, pts, kmBiome,
-          turns: { epingles, serres, rapides, plusLongueDroite: maxRun },
-          poiPer100km: +(nPoi / (totalKm / 100)).toFixed(1),
-          altMin: Math.min(...pts.map((p) => p.h)),
-          altMax: Math.max(...pts.map((p) => p.h)),
-        });
         return;
       }
       sendJSON(res, 404, { error: 'route admin inconnue' });

@@ -23,7 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { H, Hroad, SEA_SL, ss, coastAt, tempAt, moistAt, famAt, flowAccum } from './terrain.js';
+import { H, Hroad, WP, setWorldParams, ss, coastAt, tempAt, moistAt, famAt, flowAccum } from './terrain.js';
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -74,7 +74,7 @@ function groundCol(hr, T, M, co) {
    mutateur de couleur, appliqué APRÈS groundCol par sommet. */
 function snowAndSea(c, y) {
   if (y > SNOW_ALT) c.lerp(SNOWC, Math.min(1, (y - SNOW_ALT) / 80));
-  else if (y < SEA_SL + 3) c.lerp(COL_SEABED, Math.min(1, (SEA_SL + 3 - y) / 60));
+  else if (y < WP.seaLevel + 3) c.lerp(COL_SEABED, Math.min(1, (WP.seaLevel + 3 - y) / 60));
 }
 const SNOW_ALT = 300;
 const NIGHT = 0x0a0e1a;
@@ -1083,7 +1083,7 @@ function buildWater(group, d) {
       for (let oj = -1; oj <= 1; oj++)
         for (let oi = -1; oi <= 1; oi++)
           hb = Math.min(hb, H(x + oi * hydro.CS, z + oj * hydro.CS, seed));
-      if (hb < SEA_SL + 2) continue;   // c'est la mer, pas une rivière
+      if (hb < WP.seaLevel + 2) continue;   // c'est la mer, pas une rivière
       /* n°41 : BERGE + PLAN BAS + CORRIDOR — la nappe à hb+1,5 SURVOLE
          le sol en plaine plate (mesuré km 0 : 1,9 m au-dessus de
          l'herbe, nappes carrées de 102 m découpées en triangles, de
@@ -1134,7 +1134,7 @@ function buildWater(group, d) {
   const seaGeo = new THREE.CircleGeometry(4800, 24);
   seaGeo.rotateX(-Math.PI / 2);
   const sea = new THREE.Mesh(seaGeo, water);
-  sea.position.set(mid.x, SEA_SL, mid.y);
+  sea.position.set(mid.x, WP.seaLevel, mid.y);
   group.add(sea);
   /* LACS : cellules de 2 000 m, plaine/forêt — vrais minima locaux
      de H (n°26), disque d'eau posé dans la cuvette réelle */
@@ -1780,6 +1780,10 @@ export async function init(container, { onReady } = {}) {
 }
 
 export function setData(d) {
+  /* n°42 : les constantes monde voyagent dans le snapshot — appliquées
+     AVANT tout rendu. Jeu et spectateur passent ici (aucun autre fichier
+     à changer). Idempotent, négligeable (~16 nombres par snapshot). */
+  if (d?.world) setWorldParams(d.world);
   if (!d?.cars?.length) return;
   syncTargets(d);
 }

@@ -40,7 +40,7 @@
    espacements tirés du PRNG du chunk. */
 
 import { mulberry32, makeNoise, SEG, type Track } from './engine.ts';
-import { H, Hroad, HroadC, SEA_SL, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
+import { H, Hroad, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -143,7 +143,7 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
         const qx = x + (nx - x) * q / 8, qy = y + (ny - y) * q / 8;
         const hv = H(qx, qy, seed);
         hSum += hv;
-        if (hv < SEA_SL) wet++;
+        if (hv < WP.seaLevel) wet++;
       }
       const cost = hSum / 9 + 40 * Math.abs(db) + 700 * wet / 9;
       if (!best || cost < best.cost) best = { b: bNew, x: nx, y: ny, cost };

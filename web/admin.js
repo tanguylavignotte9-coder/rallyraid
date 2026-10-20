@@ -128,6 +128,7 @@ $('resetForm').addEventListener('submit', async (e) => {
     survivalHours: Number($('cfgSurvival').value),
     poiDensity: Number($('cfgPoi').value),
     maxCars: Number($('cfgMaxCars').value),
+    world: collectWorld(),   // n°42 : la nouvelle course adopte ces réglages (persistés)
   };
   /* date sûre : un champ vide/invalide faisait JETER une exception à
      toISOString() → POST jamais envoyé, clic muet. On n'envoie
@@ -147,6 +148,7 @@ $('resetForm').addEventListener('submit', async (e) => {
   }
   else err(d.error ?? 'échec du reset');
   loadRace();
+  loadWorld();          // n°42 : le panneau reflète la course recréée (persistée)
 });
 
 $('departNow').onclick = async () => {
@@ -178,7 +180,13 @@ $('seedGo').onclick = loadSeedMap;
 
 async function loadSeedMap() {
   const seed = Number($('seedProbe').value);
-  const r = await api(`/api/admin/seedmap?seed=${seed}&km=${$('cfgKm').value || 1000}`);
+  /* n°42 : l'explorateur prévisualise AVEC les réglages du panneau
+     « Générateur de monde » — aperçu SANS sauvegarde (le serveur
+     restaure les paramètres de la course en cours). */
+  const r = await api('/api/admin/world-preview', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ seed, totalKm: Number($('cfgKm').value) || 1000, world: collectWorld() }),
+  });
   if (!r) return;
   const d = await r.json();
   drawSeedMap(d);
@@ -236,6 +244,43 @@ function drawSeedAlt(d) {
   }
 }
 
+/* ---- n°42 : générateur de monde (relief, mer, climat, familles) ---- */
+const WFIELDS = [
+  ['wAmp1', 'amp1'], ['wLam1', 'lam1'], ['wAmp2', 'amp2'], ['wLam2', 'lam2'],
+  ['wAmp3', 'amp3'], ['wLam3', 'lam3'], ['wAmp4', 'amp4'], ['wLam4', 'lam4'],
+  ['wSea', 'seaLevel'], ['wTempBase', 'tempBase'], ['wTempLat', 'tempLat'],
+  ['wFamAlt', 'famAlt'], ['wFamCoast', 'famCoast'], ['wFamDry', 'famDry'],
+  ['wFamCold', 'famCold'], ['wFamWet', 'famWet'],
+];
+let WDEF = null;   // valeurs par défaut (pour le bouton « Réglages par défaut »)
+
+async function loadWorld() {
+  const r = await api('/api/admin/world');
+  if (!r) return;
+  const d = await r.json();
+  WDEF = d.world;
+  fillWorld(d.world);
+}
+
+function fillWorld(w) {
+  for (const [id, key] of WFIELDS) { const v = w[key]; if (v !== undefined) $(id).value = v; }
+}
+
+function collectWorld() {
+  /* champ vide/non numérique → ABSENT (le serveur remplace par le
+     défaut de CETTE clé — pas 0, qui casserait le bruit) */
+  const w = {};
+  for (const [id, key] of WFIELDS) {
+    const n = Number($(id).value);
+    if (Number.isFinite(n)) w[key] = n;
+  }
+  return w;
+}
+
+$('wDefaults').onclick = () => { if (WDEF) fillWorld(WDEF); };
+
 loadAccounts();
 loadRace();
+loadWorld();          // n°42 : UNE SEULE fois — pas dans loadRace (rafraîchi
+                      // toutes les 10 s, il écraserait le panneau en cours d'édition)
 setInterval(loadRace, 10000);

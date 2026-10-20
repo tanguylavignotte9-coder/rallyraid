@@ -26,7 +26,7 @@ import {
 import {
   makeRoute, routeTrack, type Route, type RouteTrack, type PoiKind,
 } from './route.ts';
-import { FAM_NAMES } from './terrain.ts';   // n°33 : familles gameplay (6)
+import { FAM_NAMES, setWorldParams, type WorldParams } from './terrain.ts';   // n°33 familles (6) + n°42 monde
 
 export const TANK_L = 520;
 export const FUEL_K1 = 0.0025;   // L/s par 1000 tr/min (moteur qui tourne)
@@ -178,6 +178,8 @@ export type RaceConfig = {
   survivalHours: number;    // sans connexion → arrêt au POI (arrêt de survie)
   poiDensity: number;       // multiplicateur de densité des POI (1 = nominal)
   maxCars: number;
+  world?: WorldParams;      // n°42 : constantes du générateur (relief, mer,
+                            // climat, familles) — undefined = monde par défaut
 };
 
 export const DEFAULT_CONFIG: RaceConfig = {
@@ -326,6 +328,11 @@ export function makeCar(id: number, name: string, color: string, gridS: number):
 }
 
 export function makeRace(cfg: RaceConfig, timeScale = 1): Race {
+  /* n°42 : le monde est une fonction de la CONFIG, pas du code — les
+     paramètres du générateur font partie de la course (persistés), et
+     TOUTE construction de course les applique AVANT makeRoute (ADR 0004 :
+     déterminisme = (graine, x, y, world)). */
+  setWorldParams(cfg.world);
   const route = makeRoute(cfg.seed, cfg.totalKm, cfg.poiDensity);
   return {
     seed: cfg.seed, totalKm: cfg.totalKm, route, trk: routeTrack(route),
