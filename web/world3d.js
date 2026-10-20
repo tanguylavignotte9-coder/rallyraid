@@ -36,7 +36,6 @@ function mulberry32(a) {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
-let decorRand = mulberry32(42);
 
 /* ---- n°33 : PALETTE CLIMATIQUE — la couleur du sol dérive des axes
    (température, humidité, distance à la côte, altitude) et PLUS d'une
@@ -109,10 +108,13 @@ let villageLights = [];         // Points lumineux des villages (nuit)
 let decoRidges = [];            // dégradation fps : reliefs
 let villageGroups = [];         // dégradation fps : villages lointains
 let degraStage = 0;             // 0 rien, 1 skyline, 2 reliefs, 3 villages
+let lowFpsN = 0, highFpsN = 0;  // n°37 : hystérésis (nb de relevés consécutifs)
+let hudEl = null;               // n°37 : HUD debug fps/dégra
 
-/* HASH PUR de position : stable au rebuild de la fenêtre (decorRand,
-   lui, est RESEMÉ à chaque reconstruction — tout REPÈRE (village, lac,
-   relief, ravin) passe par ici, jamais par decorRand). */
+/* HASH PUR de position : stable au rebuild de la fenêtre — tout
+   REPÈRE (village, lac, relief, ravin) passe par ici. n°37 : le
+   décor entier (jitter, teinte, patchwork, props) est ancré au
+   monde par ce hash. */
 function posHash(a, b) {
   const x = Math.sin(a * 127.1 + b * 311.7 + (snap?.seed ?? 42) * 0.618) * 43758.5453;
   return x - Math.floor(x);
@@ -120,7 +122,10 @@ function posHash(a, b) {
 
 
 /* rampe de terrain : le bruit prend de l'amplitude en s'éloignant */
-function terrainRamp(j) { return Math.min(1, j / 12); }
+/* n°37 : la rampe retombe à 0 vers le bord externe du manteau :
+   la dernière rangée (j = BAND) n'a PLUS de jitter → couture
+   exacte avec l'anneau 0 de la bande L1. */
+function terrainRamp(j) { return Math.min(1, j / 12) * Math.min(1, (400 / STEP - j) / 4); }
 
 /* brouillard par FAMILLE (n°33) : plaine, désert, forêt (brume serrée),
    boréal, altitude, littoral */
@@ -300,6 +305,14 @@ function initScene(container) {
     e.preventDefault();
     camZoom = Math.min(4, Math.max(0.45, camZoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
   }, { passive: false });
+  /* n°37 : HUD debug discret (fps + étage de dégradation) — diagnostic
+     « aucun décor » : « dégra 3 » = machine en dégradation, les
+     villages/reliefs/skyline sont cachés par performance. */
+  hudEl = document.createElement('div');
+  hudEl.style.cssText = 'position:absolute;left:8px;top:8px;z-index:6;color:#fff;'
+    + 'font:11px/1.4 monospace;text-shadow:0 1px 2px #000;pointer-events:none;opacity:.8';
+  hudEl.textContent = '… fps';
+  container.appendChild(hudEl);
 }
 
 /* ============================================================
@@ -341,7 +354,6 @@ async function refreshWorld() {
     const group = new THREE.Group();
     poiLights = [];
     villageLights = [];
-    decorRand = mulberry32(snap.seed ?? 42);
     winS0 = s0;
     /* n°33 : grille d'écoulement AVANT les couches qui la lisent
        (buildVillages : porte eau ; buildWater : rivières causales). */
@@ -543,11 +555,17 @@ function buildTerrain(group, d) {
         const dist = p.w + 2 + j * STEP;
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
-        const y = terrainY(p, i, dist) + decorRand() * 0.8 * terrainRamp(j);
+        /* n°37 : jitter ANCRÉ AU MONDE — hash du sommet (x, z) au lieu
+           du PRNG de fenêtre : stable au rebuild (l'ancien re-tirait
+           chaque sommet à chaque fenêtre : le sol ondulait tout au
+           long du voyage), identique pour tous les clients. Bonus :
+           deux sommets au même point monde (épingles) obtiennent le
+           même jitter → plus d'artefact d'auto-recouvrement. */
+        const y = terrainY(p, i, dist) + posHash(Math.round(x / 8), Math.round(zz / 8)) * 0.8 * terrainRamp(j);
         pos.push(x, y, zz);
         const c2 = groundCol(y, T, M, co);
         snowAndSea(c2, y);
-        c2.offsetHSL(0, 0, (decorRand() - 0.5) * 0.03);
+        c2.offsetHSL(0, 0, (posHash(Math.round(x / 8) + 77, Math.round(zz / 8)) - 0.5) * 0.03);  // n°37 : teinte ancrée au monde
         col.push(c2.r, c2.g, c2.b);
       }
     }
@@ -594,7 +612,6 @@ function buildMidFar(group, d) {
                                         // trous en coin entre L0 et L1. Le maillage
                                         // reste minuscule (~12 k sommets/fenêtre).
   let vcount = 0;
-  const cellSide = 220 / (STEP * SAMPL); // parcelle agricole ~220 m
   const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
   const HEDGE = new THREE.Color('#3f5a35');
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
@@ -611,15 +628,24 @@ function buildMidFar(group, d) {
       const M0 = moistAt(p.x, p.y, seed);
       const co = coastAt(p.x, p.y, seed);
       for (let k = 0; k < RINGS.length; k++) {
-        const dist = RINGS[k];
+        /* n°37 : l'anneau 0 passe à la rangée externe EXACTE du manteau
+           (w + 2 + 400, même formule terrainY, même rangée) → couture
+           parfaite (0,00 m mesuré) : l'ancien anneau à 400 m laissait
+           un décroché de w + 2 ≈ 8 m en latéral. */
+        const dist = k === 0 ? p.w + 2 + 400 : RINGS[k];
         const x = p.x + nx * side * dist;
         const zz = p.y + nz * side * dist;
         const y = terrainY(p, i, dist);
         let c;
         if (p.biome === 0 && M0 > 0.35 && M0 < 0.75) {
           /* PATCHWORK AGRICOLE : parcelles ~220 m, haies aux frontières */
-          const cell = Math.floor((i / SAMPL) / cellSide);
-          const inCell = ((i / SAMPL) / cellSide) - cell;
+          /* n°37 : cellule = abscisse MONDE / 220 — l'ancienne clé
+             (indice de fenêtre) remélangeait 73 % des parcelles à
+             chaque glissement de fenêtre : le patchwork de la plaine
+             se recousait en permanence au loin. */
+          const sAbs = winS0 + i * STEP;
+          const cell = Math.floor(sAbs / 220);
+          const inCell = (sAbs / 220) - cell;
           const edge = inCell < 0.04 || inCell > 0.96;
           if (edge) c = HEDGE;
           else {
@@ -629,7 +655,7 @@ function buildMidFar(group, d) {
         } else {
           c = groundCol(y, T, M0, co);
           snowAndSea(c, y);
-          c.offsetHSL(0, 0, (posHash(i, k) - 0.5) * 0.04);
+          c.offsetHSL(0, 0, (posHash(winS0 / STEP + i, k) - 0.5) * 0.04);  // n°37 : rangée monde
         }
         push(x, y, zz, c);
         vcount++;
@@ -667,14 +693,22 @@ function buildMidFar(group, d) {
 function buildRidges(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
-  const nMass = 3 + Math.floor(posHash(Math.floor(winS0 / 1000), 11) * 6);
   decoRidges = [];
-  for (let m = 0; m < nMass; m++) {
-    const h1 = posHash(Math.floor(winS0 / 1000), 21 + m);
-    const h2 = posHash(Math.floor(winS0 / 1000) + m, 23);
-    const h3 = posHash(m, Math.floor(winS0 / 1000));
-    const sIdx = Math.floor(h1 * pts.length);
-    const p = pts[Math.min(pts.length - 1, sIdx)];
+  /* n°37 : masses ANCRÉES AU MONDE (cellules de 1 km d'arc, comme
+     les villages) — l'ancienne clé floor(winS0/1000) changeait à
+     CHAQUE fenêtre : les montagnes de l'horizon se téléportaient
+     tous les 2,5 km de course. Même silhouette, mêmes couleurs,
+     placement stable et identique pour tous les clients. */
+  for (let cell = Math.floor(winS0 / 1000); cell <= Math.floor((winS0 + pts.length * STEP) / 1000); cell++) {
+    const h0 = posHash(cell, 11);
+    const nHere = h0 < 0.35 ? 1 : h0 < 0.55 ? 2 : 0;   // ~6 masses/fenêtre de 8 km
+    for (let m = 0; m < nHere; m++) {
+    const h1 = posHash(cell, 21 + m);
+    const h2 = posHash(cell, 23 + m);
+    const h3 = posHash(cell * 3 + m, 25);
+    const sIdx = Math.round((cell * 1000 + h1 * 1000 - winS0) / STEP);
+    if (sIdx < 2 || sIdx >= pts.length - 2) continue;
+    const p = pts[sIdx];
     const side = h2 < 0.5 ? -1 : 1;
     const dist = 1200 + h3 * 1000;
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
@@ -711,7 +745,7 @@ function buildRidges(group, d) {
       const bx = cx + dirX * (u - 0.5) * W * 2;
       const bz = cz + dirZ * (u - 0.5) * W * 2;
       pos.push(bx, baseY, bz); cols.push(c.r, c.g, c.b);
-      const peakH = baseY + ridgeH * (0.6 + 0.4 * posHash(m * 10 + t, 31));
+      const peakH = baseY + ridgeH * (0.6 + 0.4 * posHash(cell * 10 + t, 31));
       if (dry) {
         /* MESA tabulaire : plateau plat + flancs raides */
         const topH = baseY + ridgeH * 0.85;
@@ -743,6 +777,7 @@ function buildRidges(group, d) {
     mesh.receiveShadow = false;
     group.add(mesh);
     decoRidges.push(mesh);
+  }
   }
 }
 
@@ -1117,12 +1152,16 @@ function buildProps(group, d) {
   for (let i = 2; i < pts.length - 2; i += 2) {
     const p = pts[i];
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-    const r1 = decorRand(), r2 = decorRand(), r3 = decorRand();
+    /* n°37 : tirages ANCRÉS AU MONDE (rangée monde rw) — l'ancien
+       PRNG de fenêtre faisait apparaître/disparaître les arbres à
+       chaque glissement de fenêtre. */
+    const rw = winS0 / STEP + i;
+    const r1 = posHash(rw, 40), r2 = posHash(rw, 41), r3 = posHash(rw, 42);
     const side = r2 < 0.5 ? -1 : 1;
     const dist = p.w + 4 + r3 * 90;
     const x = p.x + nx * side * dist;
     const zz = p.y + nz * side * dist;
-    const y = terrainY(p, i, dist) + decorRand() * 2;
+    const y = terrainY(p, i, dist) + posHash(rw, 43) * 2;
     /* n°33 — CASCADE CLIMATIQUE : la végétation dérive des axes au
        point de pose (plus d'étiquette par abscisse) — roches en
        nival, pins taïga sous −6 °C, pins+roches de montagne, palmiers
@@ -1542,23 +1581,40 @@ function loop() {
   if (now - lastFpsT > 2000) {
     const fps = frames / ((now - lastFpsT) / 1000);
     frames = 0; lastFpsT = now;
-    if (fps < 28 && quality > 0.6) {
-      quality = 0.6;
-      renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
-      /* ordre de dégradation : 1. skyline, 2. reliefs, 3. villages —
-         la bande L1 JAMAIS (c'est elle qui remplit le fond) */
-      degraStage = Math.min(3, degraStage + 1);
-      if (degraStage >= 1 && skyGroup) skyMat.opacity = 0;
-      if (degraStage >= 2) for (const m of decoRidges) m.visible = false;
-      if (degraStage >= 3) for (const m of villageGroups) m.visible = false;
-    } else if (fps < 28 && quality <= 0.6) {
-      degraStage = Math.min(3, degraStage + 1);
-      if (degraStage >= 1 && skyGroup) skyMat.opacity = 0;
-      if (degraStage >= 2) for (const m of decoRidges) m.visible = false;
-      if (degraStage >= 3) for (const m of villageGroups) m.visible = false;
-    } else if (fps > 50 && quality === 1) {
-      renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
-    }
+    /* n°37 : HYSTÉRÉSIS — avant, un seul relevé < 28 fps montait
+       d'un cran toutes les 2 s et les couches restaient cachées
+       jusqu'au rebuild suivant (~83 s à 100 km/h) : villages
+       visibles ~6 s par fenêtre — « aucun décor au loin ».
+       Maintenant : 3 relevés consécutifs < 28 pour dégrader,
+       2 relevés consécutifs > 40 pour restaurer, et les
+       visibilités sont RÉAPPLIQUÉES à chaque relevé (plus jamais
+       d'état fantôme après un rebuild). */
+    if (fps < 28) {
+      lowFpsN++; highFpsN = 0;
+      if (lowFpsN >= 3) {
+        if (quality > 0.6) {
+          quality = 0.6;
+          renderer.setPixelRatio(Math.min(devicePixelRatio, 1));
+        }
+        degraStage = Math.min(3, degraStage + 1);
+      }
+    } else if (fps > 40) {
+      highFpsN++; lowFpsN = 0;
+      if (highFpsN >= 2) degraStage = Math.max(0, degraStage - 1);
+      if (fps > 50 && quality < 1) {
+        quality = 1;
+        renderer.setPixelRatio(Math.min(devicePixelRatio, isMobile ? 1.5 : 2));
+      }
+    } else { lowFpsN = 0; highFpsN = 0; }
+    /* ordre de dégradation : 1. skyline, 2. reliefs, 3. villages —
+       la bande L1 JAMAIS (c'est elle qui remplit le fond) */
+    if (degraStage >= 1 && skyGroup) skyMat.opacity = 0;
+    else if (skyGroup) skyMat.opacity = 0.85;
+    if (degraStage >= 2) for (const m of decoRidges) m.visible = false;
+    else for (const m of decoRidges) m.visible = true;
+    if (degraStage >= 3) for (const m of villageGroups) m.visible = false;
+    else for (const m of villageGroups) m.visible = true;
+    if (hudEl) hudEl.textContent = `${Math.round(fps)} fps · dégra ${degraStage} · q ${quality.toFixed(1)}`;
   }
   animateCars(dt, now);
   updateCamera(dt);
@@ -1637,5 +1693,6 @@ export function dispose() {
   voices.clear();
   ac?.close();
   ac = null; master = null;
+  if (hudEl) { hudEl.remove(); hudEl = null; }
   renderer?.dispose();
 }
