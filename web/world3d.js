@@ -23,7 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { H, SEA_SL, ss, coastAt, tempAt, moistAt, famAt } from './terrain.js';
+import { H, Hroad, SEA_SL, ss, coastAt, tempAt, moistAt, famAt, flowAccum } from './terrain.js';
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -104,6 +104,7 @@ let poiLights = [];
 let winS0 = 0;                 // abscisse du 1er point de la fenêtre (hash stable)
 let skyGroup = null, skyMat = null;
 let waterMat = null;            // matériau d'eau PARTAGÉ rivières + lacs
+let hydro = null;               // n°33 : grille d'écoulement de la fenêtre (rivières causales, villages à l'eau)
 let villageLights = [];         // Points lumineux des villages (nuit)
 let decoRidges = [];            // dégradation fps : reliefs
 let villageGroups = [];         // dégradation fps : villages lointains
@@ -342,6 +343,9 @@ async function refreshWorld() {
     villageLights = [];
     decorRand = mulberry32(snap.seed ?? 42);
     winS0 = s0;
+    /* n°33 : grille d'écoulement AVANT les couches qui la lisent
+       (buildVillages : porte eau ; buildWater : rivières causales). */
+    hydro = buildHydro(d);
     /* n°32 : fondu longitudinal des segs — 1 aux points pont/tunnel,
        fondu linéaire sur 10 points (160 m) autour, 0 ailleurs.
        O(n·10) par rebuild, négligeable. DOIT être prêt avant
@@ -751,8 +755,8 @@ function buildRidges(group, d) {
 function buildVillages(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
-  const VILL_P = [0.022, 0.012, 0.006, 0.008];
-  const FARM_P = [0.008, 0.004, 0.002, 0.003];
+  const VILL_P = [0.022, 0.006, 0.012, 0.003, 0.005, 0.018];
+  const FARM_P = [0.008, 0.002, 0.004, 0.001, 0.002, 0.006];
   villageLights = [];
   villageGroups = [];
   const wallGeo = new THREE.BoxGeometry(6, 4, 5);
@@ -773,14 +777,31 @@ function buildVillages(group, d) {
     const i = Math.round(sCell / STEP);
     if (i < 2 || i >= pts.length - 2) continue;
     const p = pts[i];
-    const b = p.biome;
-    const isVillage = posHash(cell, 7) < VILL_P[b];
-    const isFarm = !isVillage && posHash(cell, 9) < FARM_P[b];
-    if (!isVillage && !isFarm) continue;
     const side = posHash(cell, 8) < 0.5 ? -1 : 1;
-    const dist = isVillage ? 350 + posHash(cell, 10) * 850 : 250 + posHash(cell, 10) * 300;
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-    const cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
+    /* n°33 : 2 TEMPS — le lieu est sonné à distance VILLAGE (350-1 200 m)
+       et gaté par la famille DU LIEU (famAt à la position, pas l'étiquette
+       du point route) : un lieu désertique n'accueille pas un village de
+       plaine. S'il n'est pas village, on retente en FERME (250-550 m),
+       re-gaté par FARM_P de la famille du nouveau lieu. */
+    let dist = 350 + posHash(cell, 10) * 850;
+    let cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
+    let famLoc = famAt(cx, cz, seed);
+    let isVillage = posHash(cell, 7) < VILL_P[famLoc];
+    if (!isVillage) {
+      dist = 250 + posHash(cell, 10) * 300;
+      cx = p.x + nx * side * dist; cz = p.y + nz * side * dist;
+      famLoc = famAt(cx, cz, seed);
+      if (posHash(cell, 9) >= FARM_P[famLoc]) continue;
+    }
+    /* n°33 — VILLAGES CAUSAUX : l'eau d'abord (accumulation hydro
+       ≥ 60 — 25 en désert où chaque oued compte), dans un rayon de
+       600 m ; la température ensuite (≥ −8 °C) ; jamais au-dessus de
+       la ligne de neige (plateforme Hroad ≤ SNOW_ALT). Un village
+       vit là où on PEUT vivre — le hash ne garde que le détail. */
+    if (hydroAccMax(cx, cz, 600) < (famLoc === 1 ? 25 : 60)) continue;
+    if (tempAt(cx, cz, seed) < -8) continue;
+    if (Hroad(cx, cz, seed) > SNOW_ALT) continue;
     let hMin = Infinity, hMax = -Infinity;
     for (let a = -50; a <= 50; a += 25)
       for (let b2 = -50; b2 <= 50; b2 += 25) {
@@ -843,46 +864,89 @@ function getWaterMat() {
   return waterMat;
 }
 
+/* ============================================================
+   n°33 — HYDROLOGIE LOCALE : grille D8 de 100 m sur la bbox de la
+   fenêtre + marge 2 400 m ; flowAccum (core/terrain) descend le
+   relief case par case et accumule l'eau reçue. Pur de la fenêtre :
+   même grille → mêmes rivières au rebuild (jamais de PRNG). Le coût
+   est borné par la fenêtre (aujourd'hui ~180×180 cellules).
+   ============================================================ */
+function buildHydro(d) {
+  const pts = d.pts;
+  const seed = snap?.seed ?? 42;
+  const CS = 100, PAD = 2400;
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.y > maxY) maxY = p.y;
+  }
+  /* origine ALIGNÉE AU MONDE (multiple de CS) : les cellules rivière
+     tombent aux mêmes positions monde à chaque rebuild de fenêtre —
+     pas de tremblement d'eau quand la fenêtre glisse. */
+  const ox = Math.floor((minX - PAD) / CS) * CS;
+  const oz = Math.floor((minY - PAD) / CS) * CS;
+  const w = Math.ceil((maxX + PAD - ox) / CS) + 1;
+  const h = Math.ceil((maxY + PAD - oz) / CS) + 1;
+  const grid = new Float64Array(w * h);
+  for (let j = 0; j < h; j++)
+    for (let i = 0; i < w; i++)
+      grid[j * w + i] = H(ox + i * CS, oz + j * CS, seed);
+  const acc = flowAccum(grid, w, h);
+  return { x0: ox, z0: oz, w, h, CS, acc };
+}
+
+/* max d'accumulation dans le carré de rayon r autour de (x, z) */
+function hydroAccMax(x, z, r) {
+  if (!hydro) return 0;
+  const g0x = Math.max(0, Math.round((x - r - hydro.x0) / hydro.CS));
+  const g0y = Math.max(0, Math.round((z - r - hydro.z0) / hydro.CS));
+  const g1x = Math.min(hydro.w - 1, Math.round((x + r - hydro.x0) / hydro.CS));
+  const g1y = Math.min(hydro.h - 1, Math.round((z + r - hydro.z0) / hydro.CS));
+  let m = 0;
+  for (let gy = g0y; gy <= g1y; gy++)
+    for (let gx = g0x; gx <= g1x; gx++)
+      if (hydro.acc[gy * hydro.w + gx] > m) m = hydro.acc[gy * hydro.w + gx];
+  return m;
+}
+
 function buildWater(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
   const water = getWaterMat();
-  /* RIVIÈRES : ruban au fond du ravin sur chaque run seg=1 (± 120 m) */
-  let i = 0;
-  while (i < pts.length) {
-    if (pts[i].seg === 1) {
-      const runStart = Math.max(0, i - Math.round(120 / STEP));
-      while (i < pts.length && pts[i].seg === 1) i++;
-      const runEnd = Math.min(pts.length - 1, i + Math.round(120 / STEP));
-      const width = 10 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 3) * 14;
-      const phase = posHash(Math.floor((winS0 + runStart * STEP) / 100), 4) * Math.PI * 2;
-      const amp = 15 + posHash(Math.floor((winS0 + runStart * STEP) / 100), 5) * 25;
-      const pos = [], idx = [];
-      let vi = 0;
-      let deepEnough = false;
-      for (let q = runStart; q <= runEnd; q++) {
-        const p = pts[q];
-        const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-        const meander = Math.sin((q - runStart) * 0.08 + phase) * amp;
-        /* fond de vallée RÉEL : min de H sur la traversée latérale */
-        let hb = Infinity;
-        for (let dd = -150; dd <= 150; dd += 25)
-          hb = Math.min(hb, H(p.x + nx * dd, p.y + nz * dd, seed));
-        if (p.z - hb >= 8) deepEnough = true;
-        const y = hb + 2;
-        pos.push(p.x + nx * (meander - width / 2), y, p.y + nz * (meander - width / 2));
-        pos.push(p.x + nx * (meander + width / 2), y, p.y + nz * (meander + width / 2));
-        if (q < runEnd) { idx.push(vi, vi + 1, vi + 2, vi + 1, vi + 3, vi + 2); }
-        vi += 2;
-      }
-      if (deepEnough) {
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        geo.setIndex(idx);
-        geo.computeVertexNormals();
-        group.add(new THREE.Mesh(geo, water));
-      }
-    } else i++;
+  /* n°33 — RIVIÈRES CAUSALES : toute cellule de la grille hydro avec
+     accumulation ≥ 60 ET humidité ≥ 0,30 est une cellule de rivière.
+     Le plan d'eau = min de H sur le voisinage 3×3 + 1,5 m ; les
+     cellules sous SEA_SL+2 sont la mer (pas une rivière). L'eau
+     DESCEND le relief — elle n'est plus un ruban posé par hash sous
+     les ponts. Un quad cs/2+1 par cellule (léger recouvrement pour
+     boucher les jointures), une seule géométrie. */
+  const pos = [], idx = [];
+  let vi = 0;
+  for (let j = 1; j < hydro.h - 1; j++) {
+    for (let i = 1; i < hydro.w - 1; i++) {
+      if (hydro.acc[j * hydro.w + i] < 60) continue;
+      const x = hydro.x0 + i * hydro.CS, z = hydro.z0 + j * hydro.CS;
+      if (moistAt(x, z, seed) < 0.30) continue;
+      let hb = Infinity;
+      for (let oj = -1; oj <= 1; oj++)
+        for (let oi = -1; oi <= 1; oi++)
+          hb = Math.min(hb, H(x + oi * hydro.CS, z + oj * hydro.CS, seed));
+      if (hb < SEA_SL + 2) continue;   // c'est la mer, pas une rivière
+      const y = hb + 1.5;
+      const r = hydro.CS / 2 + 1;
+      pos.push(x - r, y, z - r, x + r, y, z - r, x + r, y, z + r, x - r, y, z + r);
+      idx.push(vi, vi + 2, vi + 1, vi, vi + 3, vi + 2);
+      vi += 4;
+    }
+  }
+  if (vi) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    group.add(new THREE.Mesh(geo, water));
   }
   /* n°33 — MER : plan au niveau SEA_SL, centré sur la fenêtre. La
      côte est une courbe de niveau du champ — visible dès que la
@@ -1035,6 +1099,7 @@ function buildSkyline(d) {
 /* ---- végétation par biome : InstancedMesh ---- */
 function buildProps(group, d) {
   const pts = d.pts;
+  const seed = snap?.seed ?? 42;
   const treeGeo = new THREE.ConeGeometry(2.2, 6, 6);
   const treeMat = new THREE.MeshLambertMaterial({ color: '#2e7d32' });
   const pineGeo = new THREE.ConeGeometry(1.8, 9, 5);
@@ -1043,8 +1108,12 @@ function buildProps(group, d) {
   const rockMat = new THREE.MeshLambertMaterial({ color: '#9e958a' });
   const bushGeo = new THREE.SphereGeometry(1.1, 5, 4);
   const bushMat = new THREE.MeshLambertMaterial({ color: '#7a7a3a' });
+  const palmTrunkGeo = new THREE.CylinderGeometry(0.35, 0.55, 7, 5);
+  const palmTrunkMat = new THREE.MeshLambertMaterial({ color: '#8a6a4a' });
+  const palmCrownGeo = new THREE.ConeGeometry(3.2, 1.6, 6);
+  const palmCrownMat = new THREE.MeshLambertMaterial({ color: '#3e8e3e' });
 
-  const items = { tree: [], pine: [], rock: [], bush: [] };
+  const items = { tree: [], pine: [], rock: [], bush: [], palm: [] };
   for (let i = 2; i < pts.length - 2; i += 2) {
     const p = pts[i];
     const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
@@ -1054,13 +1123,31 @@ function buildProps(group, d) {
     const x = p.x + nx * side * dist;
     const zz = p.y + nz * side * dist;
     const y = terrainY(p, i, dist) + decorRand() * 2;
+    /* n°33 — CASCADE CLIMATIQUE : la végétation dérive des axes au
+       point de pose (plus d'étiquette par abscisse) — roches en
+       nival, pins taïga sous −6 °C, pins+roches de montagne, palmiers
+       tropical humide et rivage chaud, feuillus denses en humide,
+       buissons épars en sec, prairie tempérée par défaut. */
+    const T = tempAt(x, zz, seed), M = moistAt(x, zz, seed), co = coastAt(x, zz, seed);
     const forestWave = Math.sin(i * 0.15) > -0.3;
-    if (p.biome === 0 && r1 < 0.22) items.tree.push([x, y, zz, 0.7 + r3 * 0.6]);
-    else if (p.biome === 1 && r1 < (forestWave ? 0.85 : 0.1)) items.pine.push([x, y, zz, 0.8 + r3 * 0.7]);
-    else if (p.biome === 2 && r1 < 0.18) items.bush.push([x, y, zz, 0.6 + r3]);
-    else if (p.biome === 3 && r1 < 0.25) items.rock.push([x, y, zz, 0.7 + r3]);
-    if (p.biome === 3 && y > SNOW_ALT && r1 > 0.9) items.rock.push([x, y, zz, 0.5 + r3]);
-    if (p.biome === 2 && r1 > 0.9) items.rock.push([x, y, zz, 0.8 + r3]);
+    if (y > SNOW_ALT) {
+      if (r1 < 0.35) items.rock.push([x, y, zz, 0.7 + r3]);
+    } else if (T < -6) {
+      if (r1 < 0.14) items.pine.push([x, y, zz, 0.8 + r3 * 0.7]);
+    } else if (y > 240) {
+      if (r1 < 0.18) items.pine.push([x, y, zz, 0.8 + r3 * 0.7]);
+      if (r3 > 0.85) items.rock.push([x, y, zz, 0.7 + r3]);
+    } else if (T > 22 && M > 0.45) {
+      if (r1 < 0.28) items.palm.push([x, y, zz, 0.75 + r3 * 0.5]);
+    } else if (co > 0.65 && T > 12) {
+      if (r1 < 0.20) items.palm.push([x, y, zz, 0.75 + r3 * 0.5]);
+    } else if (M > 0.55) {
+      if (r1 < (forestWave ? 0.55 : 0.12)) items.tree.push([x, y, zz, 0.7 + r3 * 0.6]);
+    } else if (M < 0.30) {
+      if (r1 < 0.15) items.bush.push([x, y, zz, 0.6 + r3]);
+    } else {
+      if (r1 < 0.22) items.tree.push([x, y, zz, 0.7 + r3 * 0.6]);
+    }
   }
   const place = (geo, mat, arr) => {
     if (!arr.length) return;
@@ -1078,6 +1165,20 @@ function buildProps(group, d) {
   place(pineGeo, pineMat, items.pine);
   place(rockGeo, rockMat, items.rock);
   place(bushGeo, bushMat, items.bush);
+  /* palmiers : 2 InstancedMesh (tronc + couronne) aux MÊMES positions */
+  if (items.palm.length) {
+    const imT = new THREE.InstancedMesh(palmTrunkGeo, palmTrunkMat, items.palm.length);
+    const imC = new THREE.InstancedMesh(palmCrownGeo, palmCrownMat, items.palm.length);
+    const m = new THREE.Matrix4(), sc = new THREE.Vector3();
+    items.palm.forEach(([x, y, z, s], i) => {
+      m.makeTranslation(x, y + 3.5 * s, z); m.scale(sc.set(s, s, s)); imT.setMatrixAt(i, m);
+      m.makeTranslation(x, y + 7.4 * s, z); m.scale(sc.set(s, s, s)); imC.setMatrixAt(i, m);
+    });
+    imT.castShadow = shadowsOn;
+    imC.castShadow = shadowsOn;
+    group.add(imT);
+    group.add(imC);
+  }
 }
 
 /* ---- POI : low-poly + éclairage la nuit ---- */
