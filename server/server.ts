@@ -719,8 +719,8 @@ const server = http.createServer(async (req, res) => {
           const p = trk.roadPoint(s);
           pts.push({ x: p.x, y: p.y, h: trk.heightAt(s), b: Math.floor(trk.biomeAt(s)) });
         }
-        /* km par biome */
-        const kmBiome = [0, 0, 0, 0];
+        /* km par FAMILLE gameplay (6 — n°33) */
+        const kmBiome = [0, 0, 0, 0, 0, 0];
         for (const p of pts) kmBiome[p.b] += step / 1000;
         /* virages par catégorie : échantillonnage de la courbure */
         let epingles = 0, serres = 0, rapides = 0;

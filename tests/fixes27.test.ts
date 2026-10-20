@@ -136,14 +136,18 @@ test('27 : survie + panne seche pendant le trajet — plus de gel permanent', ()
 test('27 : profil securite depasse une voiture garée (route large)', () => {
   /* A garée sur la route, B derriere en securite : B DOIT passer
      (poussee latérale resolvePairs + attaque) ou au moins ne jamais
-     rester collee. Sur 20 km de course B finit devant. */
+     rester collee. Sur 20 km de course B finit devant.
+     n°33 : le départ de la graine 206 est désormais en FAMILLE ALTITUDE
+     (chaussée 1,6 m : côte à côte impossible — B file derrière, n°16
+     correct) : la fenêtre du test déménage au km 61-64, une section
+     PLAINE émergente (largeur ~3,5 m, mesurée sur le banc). */
   const race = makeRace(cfg(206, 300));
   race.departed = true;
   const a = addCar(race, 'A', '#111111');
   const b = addCar(race, 'B', '#222222');
   setPlan(b, { power: 1, aggression: 'securite', actions: [] });
-  a.st = 'stop'; a.v = 0; a.s = 5_000; a.stopKind = 'roadside'; a.stopUntil = Infinity;
-  b.s = 4_000; b.v = 30;
+  a.st = 'stop'; a.v = 0; a.s = 62_000; a.stopKind = 'roadside'; a.stopUntil = Infinity;
+  b.s = 61_000; b.v = 30;
   run(race, 1200);   // 20 min a ~180 km/h = ~60 km
   assert.ok(b.s > a.s + 5, `B a depasse A : ${((b.s - a.s) / 1000).toFixed(1)} km d ecart`);
 });

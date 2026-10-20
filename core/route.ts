@@ -11,26 +11,39 @@
    (fenêtre mémoire) et se régénèrent À L'IDENTIQUE si on les
    redemande : c'est la garantie des replays et de la reprise serveur.
 
-   Biomes : segments de 150-500 km qui s'enchaînent dans l'ordre du
-   design (plaine → forêt → désert → altitude → …), transitions
-   fondues sur 2 km. Le plan de virages garde les MENUS du proto par
-   biome (droites longues au désert, épingles en altitude…) et le cap
-   est refermé sur chaque chunk (l'itinéraire chemine sans spiraler).
-   L'altitude vient du CHAMP DE MONDE (terrain.ts, n°25) : Hroad
-   (géographie terrassée) + fastAt (détail voiture pur).
-
+   n°33 — MONDE ÉMERGENT : le monde AVANT la route.
+   - Les 4 biomes d'abscisse (buildSchedule/biomeBlendR) sont RETIRÉS :
+     la famille GAMEPLAY (6 entrées, terrain.ts famAt) dérive du
+     CHAMP à la position exacte — les frontières suivent les lignes
+     d'altitude et d'humidité, plus les kilomètres.
+   - WAYPOINTS à corridor : le coût altimétrique (n°25) gagne une
+     pénalité douce de mer (700·wet/nP) — la route évite les grandes
+     étendues sous SEA_SL, mais un bras de mer se traverse (HroadC
+     causeway).
+   - POURSUITE : pure pursuit sur la POLYLINE des waypoints (viser la
+     projection avancée de LOOK m sur le segment actif) — l'ancien
+     tracker visait le waypoint seul et laissait des décalages
+     latéraux de 10-20 km (enveloppe 21 km, VIOLATION mesurée).
+   - ψ PAR FAMILLE + RE-BASE : les paramètres d'ondulation sont par
+     famille gameplay (chunk) ; chaque frontière de famille versait
+     un saut permanent dans hdPsi (marche aléatoire, −79° mesurés
+     sur 10 000 km) — hdPsi est RE-BASÉ à 0 au changement de famille.
+   - SURFACE CONTINUE : largeur/grip/roulement sont des fonctions
+     LISSES des axes climatiques (surfParams) — plus de tables par
+     étiquette.
+   L'altitude vient du CHAMP DE MONDE (terrain.ts, n°25) : HroadC
+   (géographie terrassée, causeway au-dessus de la mer) + fastAt
+   (détail voiture pur, amplitude par famille).
    Points d'intérêt (station, hôtel, garage) : posés par un CURSEUR
    GLOBAL par type — continuité parfaite aux frontières de chunks,
-   densité par biome (la plaine est riche, le désert est vide),
-   espacements tirés du PRNG du chunk. C'est l'ossature des arrêts
-   de la vision : pas de files, services à la carte. */
+   densité par FAMILLE (la plaine est riche, le désert est vide),
+   espacements tirés du PRNG du chunk. */
 
-import { mulberry32, makeNoise, SEG, BIOMES, type Track } from './engine.ts';
-import { H, Hroad } from './terrain.ts';
+import { mulberry32, makeNoise, SEG, type Track } from './engine.ts';
+import { H, Hroad, HroadC, SEA_SL, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
-export const BLEND = 250;             // fondu de biome : 2 km
 export const MAX_CACHED = 128;        // fenêtre de chunks en mémoire (~2 660 km) — n°27 :
                                       // étalement mesuré d'un peloton réel (540 km) + recherche
                                       // POI 200 km/voiture > 666 km → thrashing ×34 ; un chunk
@@ -51,7 +64,7 @@ export type Chunk = {
   w: Float64Array;           // demi-largeur de chaussée (m)
   mua: Float64Array;         // grip du biome
   crrA: Float64Array;        // roulement du biome
-  biome: Float64Array;       // biome (réel : a + t du fondu)
+  biome: Float64Array;       // famille gameplay (famAt 0-5, n°33)
   pois: Poi[];               // points d'intérêt du chunk, triés par s
 };
 
@@ -117,13 +130,22 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
         }
       }
       if (!ok) continue;
-      /* coût altimétrique : altitude moyenne du tronçon (9 sondes)
-         + préférence douce pour les caps peu changeants */
-      let hSum = 0;
+      /* coût altimétrique (n°25) : altitude moyenne du tronçon (9 sondes)
+         + préférence douce pour les caps peu changeants
+         n°33 — CORRIDOR DE MER : pénalité douce proportionnelle aux
+         sondes sous le niveau marin (700·wet/nP) — le fond de mer
+         (altitude très négative) resterait « attractif » sans elle ;
+         avec elle, traverser un bras de mer reste POSSIBLE (le
+         causeway HroadC le permet), mais longer les grandes étendues
+         est nettement préféré. */
+      let hSum = 0, wet = 0;
       for (let q = 0; q <= 8; q++) {
-        hSum += H(x + (nx - x) * q / 8, y + (ny - y) * q / 8, seed);
+        const qx = x + (nx - x) * q / 8, qy = y + (ny - y) * q / 8;
+        const hv = H(qx, qy, seed);
+        hSum += hv;
+        if (hv < SEA_SL) wet++;
       }
-      const cost = hSum / 9 + 40 * Math.abs(db);
+      const cost = hSum / 9 + 40 * Math.abs(db) + 700 * wet / 9;
       if (!best || cost < best.cost) best = { b: bNew, x: nx, y: ny, cost };
     }
     if (best) { x = best.x; y = best.y; bearing = best.b; }
@@ -165,6 +187,7 @@ function sinuAt(seed: number, gi: number): number {
   const w = (1 - Math.cos(Math.PI * t)) / 2;
   return sinuHash(seed, j0) * (1 - w) + sinuHash(seed, j0 + 1) * w;
 }
+
 /* ============================================================
    V4 — ONDULATION DE PLATE-FORME (l'échelle de la voiture)
    ============================================================
@@ -176,48 +199,54 @@ function sinuAt(seed: number, gi: number): number {
    (graine, index global) — PAS de PRNG (identique à la
    régénération d'un chunk ancien, ADR 0004). Deux composantes :
    lente (le serpent vu au loin, 0,5-0,7 km) + rapide (le grain
-   de la piste, 0,12-0,17 km). Amplitude en MÈTRES LATÉRAUX par
-   biome, modulée par la sinuosité de portion : les portions
-   calmes ondulent aussi (c'est l'échelle voiture, pas la
-   sinuosité macro).
+   de la piste, 0,12-0,17 km). Amplitude en MÈTRES LATÉRAUX,
+   modulée par la sinuosité de portion : les portions calmes
+   ondulent aussi (c'est l'échelle voiture, pas la sinuosité
+   macro).
+
+   n°33 — PARAMÈTRES PAR FAMILLE gameplay (6) : l'amplitude de ψ
+   dérive du climat du chunk (zf = famAt à l'entrée). PIÈGE
+   (mesuré, corrigé) : les paramètres PAR FAMILLE versent un SAUT
+   permanent dans hdPsi à chaque frontière de famille — hdPsi est
+   une MARCHE ALÉATOIRE (jusqu'à −79° sur 10 000 km graine 12345)
+   et le chemin réel voyage sous le cap macro avec un décalage
+   d'équilibre LOOK·tan(hdPsi) ≈ 21 km. CORRECTIF : hdPsi est
+   RE-BASÉ à 0 quand la famille du chunk change (cf. buildChunk).
 
    La correction de poursuite ne le voit PAS : psi est versé dans
    hd ET dans hdPsi (accumulateur séparé) — hdDev reste l'exact
-   plan V3, donc menus et POI d'une même graine ne changent
-   D'AUCUN BIT. */
-const PSI_LAT1 = [2.2, 3.0, 1.6, 2.4];      // m, composante lente
-const PSI_L1 = [600, 500, 700, 460];         // m, longueur d'onde lente
-const PSI_LAT2 = [0.8, 1.2, 0.6, 1.0];      // m, composante rapide
-const PSI_L2 = [150, 120, 170, 120];        // m, longueur d'onde rapide
+   plan, donc menus et POI d'une même graine ne changent pas. */
+
+const PSI_LAT1 = [2.2, 1.6, 3.0, 2.6, 2.4, 2.0];   // m, composante lente — F0..F5
+const PSI_L1 = [600, 700, 500, 520, 460, 640];     // m, longueur d'onde lente
+const PSI_LAT2 = [0.8, 0.6, 1.2, 1.0, 1.0, 0.7];   // m, composante rapide
+const PSI_L2 = [150, 170, 120, 125, 120, 140];    // m, longueur d'onde rapide
 const psiPhase = (seed: number, c: number) => {
   const v = Math.sin(c * 91.7 + seed * 0.318) * 43758.5453;
   return (v - Math.floor(v)) * Math.PI * 2;
 };
-function psiAt(rt: Route, gi: number): number {
-  const bz = biomeBlendR(rt, gi);
-  const lerpB = (p: number[]) => p[bz.a] + (p[bz.b] - p[bz.a]) * bz.t;
+function psiAt(rt: Route, gi: number, fam: number): number {
+  const lat1 = PSI_LAT1[fam]!, L1 = PSI_L1[fam]!;
+  const lat2 = PSI_LAT2[fam]!, L2 = PSI_L2[fam]!;
   const m = 0.6 + 0.8 * sinuAt(rt.seed, gi);
-  const lat1 = lerpB(PSI_LAT1) * m, L1 = lerpB(PSI_L1);
-  const lat2 = lerpB(PSI_LAT2) * m, L2 = lerpB(PSI_L2);
   const s = gi * SEG;
-  return lat1 * (Math.PI * 2 / L1) * Math.sin(s * (Math.PI * 2 / L1) + psiPhase(rt.seed, 1))
-       + lat2 * (Math.PI * 2 / L2) * Math.sin(s * (Math.PI * 2 / L2) + psiPhase(rt.seed, 2));
+  return lat1 * m * (Math.PI * 2 / L1) * Math.sin(s * (Math.PI * 2 / L1) + psiPhase(rt.seed, 1))
+       + lat2 * m * (Math.PI * 2 / L2) * Math.sin(s * (Math.PI * 2 / L2) + psiPhase(rt.seed, 2));
 }
 
-/* TF — OCTAVE VERTICALE RAPIDE PURE (détail voiture, style biome) :
-   valeur ABSOLUE pure de (graine, index global) — continue aux
-   frontières de chunks, identique à la régénération (ADR 0004), sans
-   dérive. Amplitude recalibrée sur la V4 (résidu vertical 300 m :
-   plaine ~0,1 m, désert ~0,4-0,5 m). */
-const FAST_AMP = [0.010, 0.014, 0.100, 0.028]; // par biome — recalibré valeur absolue
+/* TF — OCTAVE VERTICALE RAPIDE PURE (détail voiture, style par
+   famille) : valeur ABSOLUE pure de (graine, index global) — continue
+   aux frontières de chunks, identique à la régénération (ADR 0004),
+   sans dérive. Amplitude par FAMILLE gameplay (n°33) : la dune reste
+   l'apanage du désert (F1), le grain pierre l'altitude (F4). */
+const FAST_AMP = [0.010, 0.100, 0.014, 0.018, 0.028, 0.012]; // par famille F0..F5
 const FAST_SCALE = 21;
 const fastHash = (seed: number, j: number) => {
   const v = Math.sin(j * 269.5 + seed * 0.913) * 43758.5453;
   return (v - Math.floor(v)) * 2 - 1;   // [-1, 1]
 };
-function fastAt(rt: Route, gi: number): number {
-  const bz = biomeBlendR(rt, gi);
-  const fk = FAST_AMP[bz.a] + (FAST_AMP[bz.b] - FAST_AMP[bz.a]) * bz.t;
+function fastAt(rt: Route, gi: number, fam: number): number {
+  const fk = FAST_AMP[fam]!;
   const x = gi / 16.7;   // période ~134 m
   const j0 = Math.floor(x);
   const f = x - j0;
@@ -239,65 +268,38 @@ export type Route = {
   poiCur: PoiCursor[];       // poiCur[k] = curseurs POI à l'entrée du chunk k
   chunks: Map<number, Chunk>;
   order: number[];           // ordre d'insertion (éviction FIFO)
-  segs: { b: number; from: number; to: number }[]; // biomes, en samples globaux
 };
 
-/* ---- planning des biomes : 150-500 km par biome, cycle du design ---- */
-export function buildSchedule(seed: number, totalKm: number): Route['segs'] {
-  const rand = mulberry32((seed ^ 0x51ed270b) | 0);
-  const segs: Route['segs'] = [];
-  const end = Math.ceil((totalKm * 1000) / SEG);
-  let pos = 0;
-  let b = 0; // on démarre en plaine : un départ de course se joue sur du rapide
-  while (pos < end) {
-    /* longueur 150-500 km (en échantillons de 8 m) */
-    const len = Math.ceil(((150 + rand() * 350) * 1000) / SEG);
-    segs.push({ b, from: pos, to: pos + len });
-    pos += len;
-    b = (b + 1) % BIOMES.length;
-  }
-  return segs;
-}
-
-/* fondu de biome à l'échantillon global gi (recherche dichotomique) */
-export function biomeBlendR(rt: Route, gi: number): { a: number; b: number; t: number } {
-  const segs = rt.segs;
-  let lo = 0;
-  let hi = segs.length - 1;
-  while (lo < hi) {
-    const mid = (lo + hi + 1) >> 1;
-    if (segs[mid].from <= gi) lo = mid;
-    else hi = mid - 1;
-  }
-  const seg = segs[lo];
-  const d = seg.to - gi; // samples restants avant le biome suivant
-  if (d >= BLEND || lo === segs.length - 1) return { a: seg.b, b: seg.b, t: 0 };
-  return { a: seg.b, b: segs[Math.min(lo + 1, segs.length - 1)].b, t: 1 - d / BLEND };
-}
-
 /* ============================================================
-   CARACTÈRE DU TRACÉ PAR BIOME (design du 2026-10-14)
-   ============================================================
-   La GÉOMÉTRIE change par biome, pas seulement μ/crr :
-   - PLAINE  : asphalte, route large, rythme fluide — le royaume du duel ;
-   - FORÊT  : revêtement terre, virages serrés et « aveugles », brume ;
-   - DÉSERT  : longues droites VALLONNÉES (la dune creuse la pointe),
-               sable (μ réduit, crr accru), larges sections ;
-   - ALTITUDE: route ÉTROITE à 1 file (le duel côte à côte y est
-               physiquement impossible), pierre, cols marqués avec
-               LACETS, PONTS sur les ravins et TUNNELS sous la roche.
-   Largeurs en demi-chaussée (m) — constants exportés, l'équilibrage
-   se fera en course test. */
+   n°33 — SURFACE CONTINUE (largeur, grip, roulement)
+   La chaussée dérive du CLIMAT à la position exacte — des fonctions
+   LISSES des axes (sigmoïdes ss), pas des tables par étiquette :
+   les frontières de familles ne se VOIENT pas au revêtement.
+   Cibles (calibrées sur les biomes n°31/n°32, 4 graines) :
+   - demi-largeur (m) : plaine 3,75 · désert 3,0 · forêt 3,6 ·
+     boréal 3,2 · altitude 1,6 (une file — CAR_D 2,05 m : le duel
+     côte à côte y est physiquement impossible) · littoral 3,6 ;
+   - grip μ : plaine 1,12 · désert 0,675 (sable) · forêt 0,945
+     (terre) · boréal 0,90 (sol froid) · altitude 0,874 (pierre) ·
+     littoral 0,98 ;
+   - roulement crr : plaine 1,0 · désert 2,375 · forêt 1,21 ·
+     boréal 1,40 · altitude 1,27 · littoral 1,15. */
+function surfParams(x: number, y: number, seed: number): { w: number; mu: number; crr: number } {
+  const hr = HroadC(x, y, seed);            // géographie (causeway inclus)
+  const M = moistAt(x, y, seed);
+  const T = tempAt(x, y, seed);
+  const co = coastAt(x, y, seed);
+  const alt = ss(150, 300, hr);              // étage alpin
+  const arid = 1 - ss(0.16, 0.34, M);        // versant sec
+  const wet = ss(0.52, 0.75, M);            // forêt
+  const cold = ss(6, -6, T);                 // boréal (sigmoïde descendante)
+  return {
+    w: Math.max(1.6, 3.75 - 0.75 * arid - 0.15 * wet - 0.55 * cold - 2.15 * alt - 0.15 * co),
+    mu: 1.12 - 0.445 * arid - 0.175 * wet - 0.22 * cold - 0.246 * alt - 0.14 * co,
+    crr: 1.0 + 1.375 * arid + 0.21 * wet + 0.40 * cold + 0.27 * alt + 0.15 * co,
+  };
+}
 
-/* demi-largeur de chaussée par biome (m) : plaine/désert larges,
-   forêt moyenne, altitude ÉTROITE — 1,6 m : deux voitures ne
-   tiennent pas côte à côte (CAR_D = 2,05 m) */
-export const BIOME_W = [3.75, 3.0, 3.6, 1.6];
-/* modulation de grip du REVÊTEMENT (× biome μ) : terre en forêt,
-   sable au désert, pierre en altitude — μ plus bas même à sec */
-export const BIOME_SURF_MU = [1.0, 0.9, 0.9, 0.92];
-/* rugosité du revêtement (× crr du biome) */
-export const BIOME_SURF_CRR = [1.0, 1.25, 1.15, 1.1];
 /* écart d'altitude du TERRAIN environnant vs tracé : ravin sous un
    pont, roche au-dessus d'un tunnel (données du tracé, déterministes) */
 export const SEG_GROUND = 0;    // route au sol
@@ -307,11 +309,14 @@ export const SEG_LIMIT = 18;     // m — n°32 : seuil pont/tunnel abaissé de 
                                  // 2000 km : ponts 3,6 % · tunnels 3,8 %, tous les
                                  // biomes ≥ 2,8 % (verrou TF ≥ 2 % OK).
 export const SEG_BRIDGE = 1;    // pont : terrain = tracé - ravin
+                                 // n°33 : le CAUSEWAY sur la mer est un pont —
+                                 // gap = (SEA_SL + 12) − fond marin > SEG_LIMIT
 export const SEG_TUNNEL = 2;    // tunnel : terrain = tracé + roche
 
-/* ---- densité des POI par biome (km d'espacement de base × facteur) ---- */
+/* ---- densité des POI par FAMILLE (km d'espacement de base × facteur) —
+   n°33 : plaine riche, désert vide — la famille remplace le biome ---- */
 const POI_BASE: Record<PoiKind, number> = { station: 30, hotel: 90, garage: 120 };
-const POI_BIOME = [0.8, 1.0, 2.6, 1.4]; // plaine riche · désert vide
+const POI_FAM = [0.8, 2.6, 1.0, 1.3, 1.4, 0.9]; // plaine riche · désert vide
 export const POI_KINDS: PoiKind[] = ['station', 'hotel', 'garage'];
 
 function chunkRand(seed: number, k: number): () => number {
@@ -323,44 +328,41 @@ function chunkRand(seed: number, k: number): () => number {
    Construction d'un chunk — même générateur de virages que le proto
    ============================================================ */
 export function buildChunk(rt: Route, k: number): Chunk {
-  const e = rt.bound[k];
+  const e = rt.bound[k]!;
   const rand = chunkRand(rt.seed, k);
   const noise = makeNoise(rand);
   const noise2 = makeNoise(rand);
   /* octave verticale RAPIDE (crêtes / creux à ~130 m) : la dune creuse
      la pointe au désert, la tête de piste ondule en plaine. PRNG
      SÉPARÉ du flux des menus : les items et POI d'une même graine ne
-     changent D'AUCUN BIT par rapport à la V3 — le diff V4 est purement
-     additif. */
+     changent D'AUCUN BIT — le diff V4 est purement additif. */
   const noise3 = makeNoise(mulberry32(((rt.seed ^ 0x70731733) | 0) + Math.imul(k + 1, 2246822519) | 0));
   const s0 = k * RCHUNK;
 
-  /* ---- paramètres de biome par échantillon (fondu 2 km) ---- */
+  /* n°33 — FAMILLE DE PLAN du chunk : la classification dérive du CHAMP
+     à l'entrée (terrain.ts famAt) — le plan d'abscisse V2
+     (buildSchedule/biomeBlendR) est RETIRÉ. zf pilote le MENU de
+     virages (le caractère) et les paramètres ψ de tout le chunk ;
+     le REVÊTEMENT et l'étiquette biome[i] restent PAR POINT (continus). */
+  const zf = famAt(e.x, e.y, rt.seed);
+
+  /* ---- paramètres de surface PAR ÉCHANTILLON (calculés dans la
+     boucle d'intégration, où la position est connue) ---- */
   const w = new Float64Array(RSAMP);
   const h = new Float64Array(RSAMP);
   const mua = new Float64Array(RSAMP);
   const crrA = new Float64Array(RSAMP);
   const biome = new Float64Array(RSAMP);
-  for (let i = 0; i < RSAMP; i++) {
-    const bz = biomeBlendR(rt, k * RSAMP + i);
-    const A = BIOMES[bz.a];
-    const B = BIOMES[bz.b];
-    const t = bz.t;
-    const lerp = (p: number, q: number) => p + (q - p) * t;
-    biome[i] = bz.a + bz.t;
-    /* largeur par biome (BIOME_W) — l'altitude ÉTROITE à 1,6 m rend le
-       duel côte à côte physiquement impossible : la garde
-       anti-collision sépare en LONG */
-    w[i] = lerp(BIOME_W[bz.a], BIOME_W[bz.b]);
-    /* revêtement : modulation μ/crr du sol (terre/sable/pierre) */
-    mua[i] = lerp(A.mu * BIOME_SURF_MU[bz.a], B.mu * BIOME_SURF_MU[bz.b]);
-    crrA[i] = lerp(A.crr * BIOME_SURF_CRR[bz.a], B.crr * BIOME_SURF_CRR[bz.b]);
+  biome[0] = zf;
+  {
+    const sp = surfParams(e.x, e.y, rt.seed);
+    w[0] = sp.w; mua[0] = sp.mu; crrA[0] = sp.crr;
   }
 
-  /* ---- plan de virages : LES MENUS DU PROTO, biome par biome.
+  /* ---- plan de virages : LES MENUS DU PROTO, famille par famille.
      Identique à buildRoad : droites longues au désert, chicanes en
-     forêt, épingles en altitude ; entrées/sorties par rampes de
-     clothoïde ; le cap se contrebalance dans le chunk (l'itinéraire
+     forêt, épingles/lacets en altitude ; entrées/sorties par rampes
+     de clothoïde ; le cap se contrebalance dans le chunk (l'itinéraire
      chemine sans spiraler sur 20 000 km). ---- */
   let pi = 0;
   let hdDev = e.hdDev;   // wiggle cumulé GLOBAL (borne par la bande dir())
@@ -394,41 +396,50 @@ export function buildChunk(rt: Route, k: number): Chunk {
   const writeCourant = (z: number) => {
     const turn = 0.45 + rand() * 0.35;
     const R = z === 0 ? 430 + rand() * 470
-          : z === 1 ? 400 + rand() * 350
-          : z === 2 ? 560 + rand() * 590
-          : 350 + rand() * 300;
+          : z === 1 ? 560 + rand() * 590
+          : z === 2 ? 400 + rand() * 350
+          : z === 3 ? 400 + rand() * 300
+          : z === 4 ? 350 + rand() * 300
+          : 560 + rand() * 590;
     const len = Math.max(60, Math.min(150, Math.round(turn * R / SEG)));
     writeCorner(1 / R, len, dir());
   };
   while (pi < RSAMP - 30) {
-    const z = biomeBlendR(rt, k * RSAMP + Math.min(pi, RSAMP - 1)).a;
+    const z = zf;
     const sinu = sinuAt(rt.seed, k * RSAMP + pi);
     const u = rand();
     /* courant : tirage SÉPARÉ, fréquence modulée par la sinuosité —
        les épingles du menu ne sont jamais remplacées */
-    const pCur = z === 2 ? 0.05 + 0.22 * sinu
-               : z === 0 ? 0.05 + 0.22 * sinu
-               : 0.04 + 0.16 * sinu;
+    const pCur = z === 2 || z === 3 ? 0.05 + 0.20 * sinu
+               : z === 4 ? 0.04 + 0.16 * sinu
+               : 0.05 + 0.22 * sinu;
     const uCur = rand();
     if (uCur < pCur) { writeCourant(z); continue; }
     let kind: string;
-    /* MENUS par biome — V2ter, avec droites resserrées plaine/désert
-       pour compenser la longueur mangée par les courants */
+    /* MENUS PAR FAMILLE gameplay (n°33) — V2ter, avec droites
+       resserrées plaine/désert pour compenser la longueur mangée par
+       les courants. F0 plaine fluide · F1 désert droites · F2 forêt
+       serrée · F3 taïga nerveuse (épingles rares) · F4 altitude
+       lacets · F5 littoral coulé. */
     if (z === 0) kind = u < 0.10 ? 'droite' : u < 0.30 ? 'grand' : u < 0.54 ? 'petit' : u < 0.80 ? 's' : u < 0.98 ? 'angle' : 'epingle';
     else if (z === 1) kind = u < 0.08 ? 'droite' : u < 0.46 ? 'petit' : u < 0.74 ? 's' : u < 0.98 ? 'angle' : 'epingle';
-    else if (z === 2) kind = u < 0.42 ? 'droite' : u < 0.62 ? 'grand' : 'angle';
-    else kind = u < 0.06 ? 'droite' : u < 0.26 ? 'petit' : u < 0.50 ? 's' : u < 0.74 ? 'epingle' : 'lacets';
+    else if (z === 2) kind = u < 0.08 ? 'droite' : u < 0.46 ? 'petit' : u < 0.74 ? 's' : u < 0.98 ? 'angle' : 'epingle';
+    else if (z === 3) kind = u < 0.18 ? 'droite' : u < 0.50 ? 'petit' : u < 0.78 ? 's' : u < 0.98 ? 'angle' : 'epingle';
+    else if (z === 4) kind = u < 0.06 ? 'droite' : u < 0.26 ? 'petit' : u < 0.50 ? 's' : u < 0.74 ? 'epingle' : 'lacets';
+    else kind = u < 0.42 ? 'droite' : u < 0.66 ? 'grand' : u < 0.92 ? 'petit' : 'angle';
     if (kind === 'droite') {
       /* portion calme → lignes plus LONGUES (×1 à ×1,6) */
-      const long = Math.round((z === 2 ? 26 + Math.floor(rand() * 36)
-                                       : z === 0 ? 8 + Math.floor(rand() * 12)
-                                                 : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
+      const long = Math.round((z === 1 ? 26 + Math.floor(rand() * 36)
+                        : z === 5 ? 20 + Math.floor(rand() * 30)
+                        : z === 0 ? 8 + Math.floor(rand() * 12)
+                        : z === 4 ? 6 + Math.floor(rand() * 14)
+                                  : 10 + Math.floor(rand() * 20)) * (1 + 0.6 * (1 - sinu)));
       writeStraight(long);
     }
-    else if (kind === 'grand') writeCorner(1 / (z === 0 ? 150 + rand() * 170 : 145 + rand() * 135), 12 + Math.floor(rand() * 18), dir());
-    else if (kind === 'petit') writeCorner(1 / (z === 0 ? 120 + rand() * 100 : z === 1 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
+    else if (kind === 'grand') writeCorner(1 / (z === 0 ? 150 + rand() * 170 : z === 5 ? 160 + rand() * 140 : 145 + rand() * 135), 12 + Math.floor(rand() * 18), dir());
+    else if (kind === 'petit') writeCorner(1 / (z === 0 ? 120 + rand() * 100 : z === 2 || z === 3 ? 110 + rand() * 90 : 140 + rand() * 130), 8 + Math.floor(rand() * 12), dir());
     else if (kind === 's') {
-      const cvS = 1 / (z === 3 ? 90 + rand() * 70 : z === 0 ? 120 + rand() * 100 : 150 + rand() * 130);
+      const cvS = 1 / (z === 4 ? 90 + rand() * 70 : z === 3 ? 110 + rand() * 90 : z === 0 ? 120 + rand() * 100 : 150 + rand() * 130);
       const lS = 7 + Math.floor(rand() * 8);
       const sgn = dir(); writeCorner(cvS, lS, sgn); writeCorner(cvS, lS, -sgn);
     } else if (kind === 'angle') writeCorner(1 / (90 + rand() * 90), 14 + Math.floor(rand() * 12), dir());
@@ -444,7 +455,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
         if (u0 < n - 1) writeStraight(4 + Math.floor(rand() * 8));  // 32-96 m entre épingles
       }
     }
-    else writeCorner(1 / (28 + rand() * 22), z === 3 ? 11 + Math.floor(rand() * 11) : 9 + Math.floor(rand() * 9), dir(), 2.45 + rand() * 0.7);
+    else writeCorner(1 / (28 + rand() * 22), z === 4 ? 11 + Math.floor(rand() * 11) : 9 + Math.floor(rand() * 9), dir(), 2.45 + rand() * 0.7);
   }
   writeStraight(RSAMP - pi);
 
@@ -458,62 +469,98 @@ export function buildChunk(rt: Route, k: number): Chunk {
   zs[0] = 0;
   h[0] = e.h;
   /* n°25 : l'altitude = Hroad(position) + fastAt — l'ancien accumulateur
-     de bruit d'abscisse (inc/incS, H_PULL) a été supprimé au n°26. */
+     de bruit d'abscisse (inc/incS, H_PULL) a été supprimé au n°26.
+     n°33 : HroadC — la route ne plonge jamais sous la mer (causeway). */
   const wps = rt.wps;
   const KH = 0.12, CMAX = 0.008;   // gain de poursuite / virage max par pas (R ≈ 1 km)
+  const LOOK = 4000;               // n°33 : pure pursuit — viser la projection
+                                   // avancée de LOOK m sur le SEGMENT ACTIF. Le
+                                   // tracker « vise le waypoint » ne ramenait
+                                   // JAMAIS vers la polyline (décalages latéraux
+                                   // persistants 10-20 km, enveloppe 21,4 km
+                                   // mesurés) ; sweep 2500/4000/6000 : tous
+                                   // tiennent, 4000 retenu (cornes macro douces)
   let wpIdx = e.wpIdx;
   /* la phase de plan a accumulé le wiggle PRÉVISIONNEL du chunk (bande
      dir()) ; l'intégration repart de l'état d'ENTRÉE et le re-accumule
      échantillon par échantillon — pas de double comptage */
   hdDev = e.hdDev;
   /* V4 : l'offset psi cumulé se porte dans un accumulateur SÉPARÉ —
-     hdDev reste l'exact plan V3 (menus + POI d'une même graine ne
-     changent D'AUCUN BIT), la correction voit le cap macro seul. */
+     hdDev reste l'exact plan (menus + POI d'une même graine ne
+     changent D'AUCUN BIT), la correction voit le cap macro seul.
+     n°33 : RE-BASE — les paramètres ψ sont PAR FAMILLE : chaque
+     frontière de famille verse un saut permanent ; sans re-base,
+     hdPsi est une marche aléatoire (−79° sur 10 000 km mesurés,
+     décalage d'équilibre LOOK·tan(hdPsi) ≈ 21 km). */
   let hdPsi = e.hdPsi ?? 0;   // ?? 0 : robustesse
+  if (k > 0 && famAt(rt.bound[k - 1]!.x, rt.bound[k - 1]!.y, rt.seed) !== zf) hdPsi = 0;
   for (let i = 0; i < RSAMP; i++) {
     /* ---- avancement du waypoint cible : 3 tests, du proche au géométrique.
        NE PAS « simplifier » en un seul test dot<0 : le test dot<0 nu
        déclenche jusqu'à 26 km AVANT les sommets serrés et fait couper le
-       coin à 11 km de la polyline (mesuré) — bug historique. */
+       coin à 11 km de la polyline (mesuré) — bug historique.
+       n°33 : test 2 reserré à 15 km (le pure pursuit rend le test
+       géométrique plus vif — mesuré, 4 graines, enveloppe saine). */
     while (wpIdx < wps.length - 1) {
-      const cur = wps[wpIdx], nxt = wps[wpIdx + 1];
-      const px = e.x + xs[i], py = e.y + zs[i];
+      const cur = wps[wpIdx]!, nxt = wps[wpIdx + 1]!;
+      const px = e.x + xs[i]!, py = e.y + zs[i]!;
       const dcx = cur.x - px, dcy = cur.y - py;
       const d2 = dcx * dcx + dcy * dcy;
       let adv = d2 < 5000 * 5000;                                   // 1. dist < 5 km
-      if (!adv && wpIdx > 0 && d2 < 25000 * 25000) {                 // 2. plan du sommet franchi
-        const inx = cur.x - wps[wpIdx - 1].x, iny = cur.y - wps[wpIdx - 1].y;
+      if (!adv && wpIdx > 0 && d2 < 15000 * 15000) {                 // 2. plan du sommet franchi
+        const inx = cur.x - wps[wpIdx - 1]!.x, iny = cur.y - wps[wpIdx - 1]!.y;
         if ((px - cur.x) * inx + (py - cur.y) * iny > 0) adv = true;
       }
       if (!adv && d2 < 8000 * 8000 &&
           (nxt.x - px) * dcx + (nxt.y - py) * dcy < 0) adv = true;   // 3. repli borné
       if (adv) wpIdx++; else break;
     }
-    const tw = wps[wpIdx];
-    const hdT = Math.atan2(tw.y - (e.y + zs[i]), tw.x - (e.x + xs[i]));
+    /* n°33 — PURE PURSUIT : viser la PROJECTION de la position sur le
+       segment actif wps[wpIdx-1]→wps[wpIdx], avancée de LOOK m (clamp
+       à la fin du segment) ; wpIdx 0 (départ) : viser le waypoint. */
+    let tx: number, ty: number;
+    if (wpIdx === 0) { tx = wps[0]!.x; ty = wps[0]!.y; }
+    else {
+      const a = wps[wpIdx - 1]!, b2 = wps[wpIdx]!;
+      const dx = b2.x - a.x, dy = b2.y - a.y;
+      const L = Math.hypot(dx, dy) || 1;
+      let t = ((e.x + xs[i]! - a.x) * dx + (e.y + zs[i]! - a.y) * dy) / (L * L);
+      t = Math.max(0, Math.min(1, t + LOOK / L));
+      tx = a.x + dx * t; ty = a.y + dy * t;
+    }
+    const hdT = Math.atan2(ty - (e.y + zs[i]!), tx - (e.x + xs[i]!));
     /* DÉ-COUPLAGE : la correction voit le cap MACRO (hd - hdDev), PAS le
        cap total — le wiggle ondole librement autour de l'axe macro sans
        être écrasé par le tracker (mesuré : bruit local +40 %). */
-    let corr = wpWrap(hdT - (hd[i] - hdDev - hdPsi)) * KH;
+    let corr = wpWrap(hdT - (hd[i]! - hdDev - hdPsi)) * KH;
     if (corr > CMAX) corr = CMAX; else if (corr < -CMAX) corr = -CMAX;
     if (i + 1 < RSAMP) {
       /* V4 : le méandre psi est versé dans hd ET dans hdPsi — la
          correction macro ne le voit pas, il ondule librement. Pur de
-         (graine, gi) : régénération d'un chunk ancien identique. */
-      const dpsi = psiAt(rt, k * RSAMP + i + 1) - psiAt(rt, k * RSAMP + i);
-      hd[i + 1] = hd[i] + step[i] + corr + dpsi;
-      xs[i + 1] = xs[i] + Math.cos(hd[i]) * SEG;
-      zs[i + 1] = zs[i] + Math.sin(hd[i]) * SEG;
-      h[i + 1] = Hroad(e.x + xs[i + 1], e.y + zs[i + 1], rt.seed) + fastAt(rt, k * RSAMP + i + 1);
-      hdDev += step[i];
+         (graine, gi) : régénération d'un chunk ancien identique.
+         n°33 : ψ par FAMILLE (zf, constante du chunk). */
+      const dpsi = psiAt(rt, k * RSAMP + i + 1, zf) - psiAt(rt, k * RSAMP + i, zf);
+      hd[i + 1] = hd[i]! + step[i]! + corr + dpsi;
+      xs[i + 1] = xs[i]! + Math.cos(hd[i]!) * SEG;
+      zs[i + 1] = zs[i]! + Math.sin(hd[i]!) * SEG;
+      /* n°33 : surface + étiquette PAR POINT (continues) : la famille,
+         le grip, la largeur et le roulement se lisent au CHAMP à la
+         position exacte de l'échantillon. */
+      const px1 = e.x + xs[i + 1]!, py1 = e.y + zs[i + 1]!;
+      const fam1 = famAt(px1, py1, rt.seed);
+      biome[i + 1] = fam1;
+      const sp = surfParams(px1, py1, rt.seed);
+      w[i + 1] = sp.w; mua[i + 1] = sp.mu; crrA[i + 1] = sp.crr;
+      h[i + 1] = HroadC(px1, py1, rt.seed) + fastAt(rt, k * RSAMP + i + 1, fam1);
+      hdDev += step[i]!;
       hdPsi += dpsi;
     } else {
-      hdDev += step[i];
+      hdDev += step[i]!;
     }
   }
 
   /* ---- POI : le curseur global de chaque type avance dans le chunk ---- */
-  const cursor: PoiCursor = { ...rt.poiCur[k] };
+  const cursor: PoiCursor = { ...rt.poiCur[k]! };
   const poiDensity = rt.poiDensity ?? 1;
   const end = s0 + RCHUNK;
   const pois: Poi[] = [];
@@ -521,8 +568,11 @@ export function buildChunk(rt: Route, k: number): Chunk {
     let s = cursor[kind];
     while (s < end) {
       if (s >= s0) pois.push({ s: Math.floor(s / SEG) * SEG, kind });
-      const fac = POI_BIOME[biomeBlendR(rt, s / SEG).a];
-      s += (POI_BASE[kind] * 1000 / Math.max(0.2, poiDensity)) * fac * (0.7 + 0.6 * rand());
+      /* n°33 : la densité se lit à la famille du point le plus proche
+         (l'étiquette du chunk est continue — plaine riche, désert vide) */
+      const i2 = Math.max(0, Math.min(RSAMP - 1, Math.floor((s - s0) / SEG)));
+      const fac = POI_FAM[Math.min(5, Math.max(0, Math.floor(biome[i2]!)))];
+      s += (POI_BASE[kind]! * 1000 / Math.max(0.2, poiDensity)) * fac * (0.7 + 0.6 * rand());
     }
     cursor[kind] = s;
   }
@@ -530,10 +580,10 @@ export function buildChunk(rt: Route, k: number): Chunk {
 
   /* ---- état de sortie : l'entrée du chunk suivant (gardé pour toujours) ---- */
   rt.bound[k + 1] = {
-    x: e.x + xs[RSAMP - 1],
-    y: e.y + zs[RSAMP - 1],
-    hd: hd[RSAMP - 1],
-    h: h[RSAMP - 1],
+    x: e.x + xs[RSAMP - 1]!,
+    y: e.y + zs[RSAMP - 1]!,
+    hd: hd[RSAMP - 1]!,
+    h: h[RSAMP - 1]!,
     wpIdx,
     hdDev,
     hdPsi,
@@ -541,28 +591,29 @@ export function buildChunk(rt: Route, k: number): Chunk {
   rt.poiCur[k + 1] = cursor;
 
   /* ---- PONTS et TUNNELS TOPOGRAPHIQUES (n°25) : l'écart route/terrain
-     décide — gap lissé > +25 m → PONT (vraie vallée), < −25 m → TUNNEL
-     (vraie crête), tous biomes, SANS PRNG. Un run PEUT être à cheval
-     sur deux chunks : le gap est pur de la position. ---- */
+     décide — gap lissé > +18 m → PONT (vraie vallée), < −18 m → TUNNEL
+     (vraie crête), toutes familles, SANS PRNG. Un run PEUT être à cheval
+     sur deux chunks : le gap est pur de la position. n°33 : le CAUSEWAY
+     de mer est un PONT (gap = niveau causeway − fond marin). ---- */
   const terr = new Float64Array(RSAMP);
   const segType = new Float64Array(RSAMP);
   /* écart route/terrain (m) : > 0 = terrain SOUS la route (vallée → PONT),
      < 0 = terrain AU-DESSUS (crête → TUNNEL). Lissé ±6 samples pour des
-     runs propres. SANS PRNG : la topographie décide, tous biomes. */
+     runs propres. SANS PRNG : la topographie décide, toutes familles. */
   const gap = new Float64Array(RSAMP);
-  for (let i = 0; i < RSAMP; i++) gap[i] = h[i] - H(e.x + xs[i], e.y + zs[i], rt.seed);
+  for (let i = 0; i < RSAMP; i++) gap[i] = h[i]! - H(e.x + xs[i]!, e.y + zs[i]!, rt.seed);
   const gapS = new Float64Array(RSAMP);
   for (let i = 0; i < RSAMP; i++) {
     let a = 0, n = 0;
     for (let d = -6; d <= 6; d++) {
       const j = i + d;
-      if (j >= 0 && j < RSAMP) { a += gap[j]; n++; }
+      if (j >= 0 && j < RSAMP) { a += gap[j]!; n++; }
     }
     gapS[i] = a / n;
   }
   for (let i = 0; i < RSAMP; i++) {
-    terr[i] = h[i] - gap[i];   // = H exact : le serveur connaît le terrain
-    segType[i] = gapS[i] > SEG_LIMIT ? SEG_BRIDGE : gapS[i] < -SEG_LIMIT ? SEG_TUNNEL : SEG_GROUND;
+    terr[i] = h[i]! - gap[i]!;   // = H exact : le serveur connaît le terrain
+    segType[i] = gapS[i]! > SEG_LIMIT ? SEG_BRIDGE : gapS[i]! < -SEG_LIMIT ? SEG_TUNNEL : SEG_GROUND;
   }
   return { k, s0, hd, xs, zs, h, terr, segType, w, mua, crrA, biome, pois };
 }
@@ -600,15 +651,14 @@ export function makeRoute(seed: number, totalKm: number, poiDensity = 1): Route 
     totalKm,
     finishS: totalKm * 1000,
     nChunks,
-    bound: [{ x: 0, y: 0, hd: 0, h: Hroad(0, 0, seed), wpIdx: 0, hdDev: 0, hdPsi: 0 }],
+    bound: [{ x: 0, y: 0, hd: 0, h: HroadC(0, 0, seed), wpIdx: 0, hdDev: 0, hdPsi: 0 }],
     wps: buildWaypoints(seed, totalKm),
     poiDensity,
     poiCur: [{ station: 25_000 / poiDensity, hotel: 80_000 / poiDensity, garage: 110_000 / poiDensity }],
     chunks: new Map(),
     order: [],
-    segs: buildSchedule(seed, totalKm),
   };
-  rt.bound[0].h = Hroad(0, 0, seed) + fastAt(rt, 0); // géographie + détail voiture dès le mètre 0
+  rt.bound[0]!.h = HroadC(0, 0, seed) + fastAt(rt, 0, famAt(0, 0, seed)); // géographie + détail voiture dès le mètre 0
   return rt;
 }
 
@@ -646,10 +696,10 @@ export function routeTrack(rt: Route): RouteTrack {
     const f = (sc - c.s0) / SEG;
     const i0 = Math.min(RSAMP - 1, Math.floor(f));
     if (i0 === RSAMP - 1) {
-      const nxt = k + 1 < rt.nChunks ? rt.bound[k + 1].hd : c.hd[RSAMP - 1];
-      return c.hd[RSAMP - 1] + (nxt - c.hd[RSAMP - 1]) * (f - i0);
+      const nxt = k + 1 < rt.nChunks ? rt.bound[k + 1]!.hd : c.hd[RSAMP - 1]!;
+      return c.hd[RSAMP - 1]! + (nxt - c.hd[RSAMP - 1]!) * (f - i0);
     }
-    return c.hd[i0] + (c.hd[i0 + 1] - c.hd[i0]) * (f - i0);
+    return c.hd[i0]! + (c.hd[i0 + 1]! - c.hd[i0]!) * (f - i0);
   };
   const hAt = (s: number): number => {
     const sc = clampS(rt, s);
@@ -658,32 +708,32 @@ export function routeTrack(rt: Route): RouteTrack {
     const f = (sc - c.s0) / SEG;
     const i0 = Math.min(RSAMP - 1, Math.floor(f));
     if (i0 === RSAMP - 1) {
-      const nxt = k + 1 < rt.nChunks ? rt.bound[k + 1].h : c.h[RSAMP - 1];
-      return c.h[RSAMP - 1] + (nxt - c.h[RSAMP - 1]) * (f - i0);
+      const nxt = k + 1 < rt.nChunks ? rt.bound[k + 1]!.h : c.h[RSAMP - 1]!;
+      return c.h[RSAMP - 1]! + (nxt - c.h[RSAMP - 1]!) * (f - i0);
     }
-    return c.h[i0] + (c.h[i0 + 1] - c.h[i0]) * (f - i0);
+    return c.h[i0]! + (c.h[i0 + 1]! - c.h[i0]!) * (f - i0);
   };
   return {
     finishS: rt.finishS,
     cvAt: (s: number) => (hdAt(s + 4) - hdAt(s - 4)) / 8,
-    muAt: (s: number) => { const { c, i } = loc(s); return c.mua[i]; },
-    wAt: (s: number) => { const { c, i } = loc(s); return c.w[i]; },
-    crrAt: (s: number) => { const { c, i } = loc(s); return c.crrA[i]; },
+    muAt: (s: number) => { const { c, i } = loc(s); return c.mua[i]!; },
+    wAt: (s: number) => { const { c, i } = loc(s); return c.w[i]!; },
+    crrAt: (s: number) => { const { c, i } = loc(s); return c.crrA[i]!; },
     heightAt: hAt,
-    biomeAt: (s: number) => { const { c, i } = loc(s); return c.biome[i]; },
+    biomeAt: (s: number) => { const { c, i } = loc(s); return c.biome[i]!; },
     roadPoint: (s: number) => {
       const sc = clampS(rt, s);
       const k = Math.min(rt.nChunks - 1, Math.floor(sc / RCHUNK));
       const c = ensureChunk(rt, k);
-      const b = rt.bound[k];
+      const b = rt.bound[k]!;
       const f = (sc - c.s0) / SEG;
       const i0 = Math.min(RSAMP - 1, Math.floor(f));
       const t = f - i0;
-      const x1 = i0 === RSAMP - 1 ? rt.bound[k + 1].x - b.x : c.xs[i0 + 1];
-      const y1 = i0 === RSAMP - 1 ? rt.bound[k + 1].y - b.y : c.zs[i0 + 1];
+      const x1 = i0 === RSAMP - 1 ? rt.bound[k + 1]!.x - b.x : c.xs[i0 + 1]!;
+      const y1 = i0 === RSAMP - 1 ? rt.bound[k + 1]!.y - b.y : c.zs[i0 + 1]!;
       return {
-        x: b.x + c.xs[i0] + (x1 - c.xs[i0]) * t,
-        y: b.y + c.zs[i0] + (y1 - c.zs[i0]) * t,
+        x: b.x + c.xs[i0]! + (x1 - c.xs[i0]!) * t,
+        y: b.y + c.zs[i0]! + (y1 - c.zs[i0]!) * t,
         hd: hdAt(sc),
       };
     },

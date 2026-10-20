@@ -253,6 +253,16 @@ test('fautes : l\'attaquant aligné trop loin est fautif, aligné il ne l\'est p
 
 test('budget : revenu périodique + dépense carburant + amende', () => {
   const race = race2cars(113, { totalKm: 1000 });
+  /* n°33 : le monde émergent place un hôtel atteignable dans la 1re
+     heure de la graine 113 — la règle fatigueHigh du plan PAR DÉFAUT
+     coucherait la voiture et fausserait la mesure de revenu (−354 €
+     mesuré). Plan explicite sans règles, comme le plein facturé plus
+     bas ; le sommeil de survie reste mais tombe hors de la fenêtre. */
+  setPlan(race.cars[0]!, { power: 1, actions: [] });
+  setPlan(race.cars[1]!, { power: 1, actions: [] });
+  race.cars[1]!.s += 30_000;   // n°33 : évite le duel (contact = FINE_HEAVY
+                               // -1500 mesuré sur la nouvelle route) — le test
+                               // mesure le revenu, pas les contacts
   const c = race.cars[0]!;
   const b0 = c.budget;
   run(race, 3600); // 1 h de course

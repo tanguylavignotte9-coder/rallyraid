@@ -170,8 +170,9 @@ $('logoutBtn').onclick = async () => {
 /* ---- explorateur de graines : mini-carte vue de dessus (couleurs par
    biome), profil d'altitude, stats — calculé par le même code serveur
    que la course (aucune divergence possible) ---- */
-const BIOME_COLORS = ['#7cb342', '#2e7d32', '#e0a96d', '#90a4ae'];
-const BIOME_NAMES = ['Plaine', 'Forêt', 'Désert', 'Altitude'];
+/* n°33 : FAMILLES gameplay (6) — ordre terrain.ts famAt */
+const BIOME_COLORS = ['#7cb342', '#e0a96d', '#2e7d32', '#7a9e8f', '#90a4ae', '#4d9bb5'];
+const BIOME_NAMES = ['Plaine', 'Désert', 'Forêt', 'Boréal', 'Altitude', 'Littoral'];
 
 $('seedGo').onclick = loadSeedMap;
 

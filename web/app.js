@@ -599,8 +599,10 @@ for (const b of document.querySelectorAll('.copTab')) {
    PRÉPARATION — profil d'altitude complet dans l'onglet CARTE
    (drawProfile existant, POI non marqués)
    ============================================================ */
-const BIOME_COLORS = ['#7cb342', '#2e7d32', '#e0a96d', '#90a4ae'];
-const BIOME_NAMES = ['Plaine', 'Forêt', 'Désert', 'Altitude'];
+/* n°33 : FAMILLES gameplay (6) — ordre terrain.ts famAt :
+   Plaine, Désert, Forêt, Boréal, Altitude, Littoral */
+const BIOME_COLORS = ['#7cb342', '#e0a96d', '#2e7d32', '#7a9e8f', '#90a4ae', '#4d9bb5'];
+const BIOME_NAMES = ['Plaine', 'Désert', 'Forêt', 'Boréal', 'Altitude', 'Littoral'];
 let profData = null;
 
 async function drawProfile() {

@@ -20,12 +20,13 @@
 */
 import {
   speedTarget, driveStep, lateralStep, cosmeticsStep, raceLineTarget, draftMul,
-  DT, CAR_L, CAR_D, V_LIM, FLAT, RW, FINAL, RATIOS, EDGE_MARGIN, BIOMES, mulberry32,
+  DT, CAR_L, CAR_D, V_LIM, FLAT, RW, FINAL, RATIOS, EDGE_MARGIN, mulberry32,
   type KinCar,
 } from './engine.ts';
 import {
   makeRoute, routeTrack, type Route, type RouteTrack, type PoiKind,
 } from './route.ts';
+import { FAM_NAMES } from './terrain.ts';   // n°33 : familles gameplay (6)
 
 export const TANK_L = 520;
 export const FUEL_K1 = 0.0025;   // L/s par 1000 tr/min (moteur qui tourne)
@@ -940,9 +941,10 @@ export function bulletinsStep(race: Race) {
   if (race.phase !== 'racing') return;
   if (race.simT - race.lastBulletinT < BULLETIN_H * 3600) return;
   race.lastBulletinT = race.simT;
-  /* n°29/H5 : les noms de biomes viennent du cœur (BIOMES[b].name) —
-     plus de copie locale synchronisée à la main */
-  const biomes: Record<number, string> = Object.fromEntries(BIOMES.map((b, i) => [i, b.name]));
+  /* n°33 : les noms de FAMILLES gameplay viennent du champ (terrain.ts
+     FAM_NAMES) — les 4 biomes d'abscisse (BIOMES engine.ts) sont
+     retirés : le bulletin décrit le monde émergent, pas une étiquette */
+  const biomes: Record<number, string> = Object.fromEntries(FAM_NAMES.map((n, i) => [i, n]));
   let lead = 0;
   for (const c of race.cars) if (c.s > lead) lead = c.s;
   const parts: string[] = [];
