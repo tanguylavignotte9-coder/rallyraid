@@ -1084,7 +1084,35 @@ function buildWater(group, d) {
         for (let oi = -1; oi <= 1; oi++)
           hb = Math.min(hb, H(x + oi * hydro.CS, z + oj * hydro.CS, seed));
       if (hb < SEA_SL + 2) continue;   // c'est la mer, pas une rivière
-      const y = hb + 1.5;
+      /* n°41 : BERGE + PLAN BAS + CORRIDOR — la nappe à hb+1,5 SURVOLE
+         le sol en plaine plate (mesuré km 0 : 1,9 m au-dessus de
+         l'herbe, nappes carrées de 102 m découpées en triangles, de
+         part et d'autre de la route) et sur le talus en montagne
+         (2,9 m à 430 m de la route : le sol du talus est un fondu
+         route→H, pas H). L'eau ne se dessine QUE bordée par le
+         terrain, comme la côte de la mer :
+         - PORTE : au moins 2,0 m de montée de H sur l'empreinte du
+           quad (±51 m) — cellule plate = pas de rive = pas d'eau ;
+         - PLAN BAS : hb+0,35 — ruisseau peu profond dans le creux,
+           bord naturel = intersection plan/pente ;
+         - CORRIDOR : pas d'eau dans edge+700+51 de la rangée la plus
+           proche (sol route-ancré ≠ H, et l'eau y serait cachée par
+           le talus depuis n°39). */
+      let hg = -Infinity;
+      for (let pj = -1; pj <= 1; pj++)
+        for (let pi = -1; pi <= 1; pi++)
+          hg = Math.max(hg, H(x + pi * (hydro.CS / 2 + 1), z + pj * (hydro.CS / 2 + 1), seed));
+      if (hg - hb < 2.0) continue;
+      let bMin = Infinity, bNear = -1;
+      for (let t = 0; t < pts.length; t++) {
+        const dd = (x - pts[t].x) ** 2 + (z - pts[t].y) ** 2;
+        if (dd < bMin) { bMin = dd; bNear = t; }
+      }
+      const pn = pts[bNear];
+      const nvx = -Math.sin(pn.hd), nvz = Math.cos(pn.hd);
+      const lat = Math.abs((x - pn.x) * nvx + (z - pn.y) * nvz);
+      if (lat < pn.w + 2 + (mantleCaps ? mantleCaps[bNear] : 400) + 751) continue;
+      const y = hb + 0.35;
       const r = hydro.CS / 2 + 1;
       pos.push(x - r, y, z - r, x + r, y, z - r, x + r, y, z + r, x - r, y, z + r);
       idx.push(vi, vi + 2, vi + 1, vi, vi + 3, vi + 2);
