@@ -562,27 +562,25 @@ function buildTerrain(group, d) {
     }
     capRow[i] = Math.min(400, Math.max(2 * STEP, Math.floor((Math.min(400, 0.9 * rMin) - (pts[i].w + 2)) / STEP) * STEP));
   }
-  /* n°44 : JUPE MINIMALE DU MANTEAU — le tissage émergent (n°43) fait
-     chuter le plafond n°40 (capRow médiane ~112 m, 44 % des rangées
-     ≤ 100 m) : les quads 100 m de la grille traversés par la route
-     étaient sautés par la règle « 2 côtés » alors que le manteau ne
-     couvrait que ±edge → trous de 50-100 m le long de la couture
-     (291-318 points non couverts par fenêtre au banc, graine 42).
-     capRow étendu à 160 m minimum : au-delà du talus de déblai, les
-     colonnes portent H(x,z) ancré au monde (n°26/37) → un repli de
-     jupe aux kinks (R < 160 m, 11 % des rangées) superpose deux
-     couches de MÊME hauteur → invisible (intrusions au-dessus de la
-     plateforme route : 0 sur 3 graines). Lissage en rampe sur ±8
-     rangées : les paliers capRow (sauts jusqu'à 80 m entre rangées
-     voisines) deviennent des pentes que suivent les cordes de la
-     grille → chevauchement de couture 72 → 14 m, trous résiduels
-     291→6-16 par fenêtre (-94 à -98 %), build inchangé (~83 ms). */
-  const SKIRT = 160, SMOOTH = 8;
-  const base = Int32Array.from(capRow, (c) => Math.min(400, Math.max(c, SKIRT)));
+  /* n°46 : ÉROSION DU CAP — la jupe n°44 (plancher 160) violait le
+     critère n°40 (cap ≤ 0,9·R local) dans les zones serrées : au km 0-8
+     de la graine 42, 426/500 rangées dépassaient le centre de courbure
+     de 80-112 m → les bandes du manteau se CROISAIENT (bowties, le
+     « gros problème visuel km 3 » historique du n°40) — morceaux de sol
+     en percée et scintillement de surfaces interpénétrées. Le lissage
+     devient une ÉROSION : capRow[i] = min(cap n°40 propre, moyenne
+     ±8 rangées) — il ne peut JAMAIS remonter au-dessus du cap de sa
+     rangée → aucune colonne n'atteint un centre de courbure, comme à
+     l'ère n°40, tout en gardant des rampes douces aux transitions.
+     Le couloir étroit qui en résulte aux kinks est couvert par la
+     grille décollée n°45, désormais dessinée PARTOUT (le saut
+     hp && hn est supprimé : plus AUCUN quad sauté). */
+  const SMOOTH = 8;
+  const base = Int32Array.from(capRow);
   for (let i = 0; i < n; i++) {
     let sum = 0, cnt = 0;
     for (let k = Math.max(0, i - SMOOTH); k <= Math.min(n - 1, i + SMOOTH); k++) { sum += base[k]; cnt++; }
-    capRow[i] = Math.max(SKIRT, Math.floor((sum / cnt) / STEP) * STEP);
+    capRow[i] = Math.min(base[i], Math.floor((sum / cnt) / STEP) * STEP);
   }
   mantleCaps = capRow;   /* lu par buildMidFar pour la couture (même plafond) */
   for (let i = 0; i < n; i++) {
@@ -757,11 +755,13 @@ function buildMidFar(group, d) {
              étiraient des quads en biais et laissaient des encoches.
              Ici : 0 shimmer, 0 perçage, 0 trou (banc n°45, 3 graines),
              build inchangé (~83 ms). Le manteau n°44 couvre ±166 m >
-             141 m (pire diagonale de quad traversant la route) → la
-             règle des 2 côtés (hp && hn) reste légitime partout ; les
-             conditions gc===4 / disp>170 de la passe d’index ne se
-             déclenchent plus (plus de sommets collés) mais restent
-             inoffensives. */
+             141 m (pire diagonale de quad traversant la route) sur
+             les portions droites. N°46 : aux kinks l’érosion du cap
+             rétrécit le manteau (jusqu’à ~50 m) → le saut hp && hn
+             de la passe d’index est SUPPRIMÉ, la grille décollée se
+             dessine PARTOUT (étanche par construction) ; les
+             conditions mortes gc===4 / disp>170 restent calculées
+             mais inopérantes. */
           const sd = lat < 0 ? -1 : 1;
           const dLow = Math.min(L, edge);
           const jj = Math.max(0, Math.min(25, Math.floor((dLow - (p.w + 2)) / STEP)));
@@ -819,7 +819,6 @@ function buildMidFar(group, d) {
          position grille est un collage sur un AUTRE bras d'épingle (même
          signe → non couvert par la règle des 2 côtés) : quad sauté, la
          zone reste couverte par le manteau. Collage légitime ≤ ~145 m. */
-      if (gc === 4 || (hp && hn) || disp[a] > 170 || disp[b] > 170 || disp[c2] > 170 || disp[d2] > 170) { nSkip++; continue; }
       idx.push(a, c2, b, b, c2, d2);
       nQuads++;
     }
