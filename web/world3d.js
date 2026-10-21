@@ -562,6 +562,28 @@ function buildTerrain(group, d) {
     }
     capRow[i] = Math.min(400, Math.max(2 * STEP, Math.floor((Math.min(400, 0.9 * rMin) - (pts[i].w + 2)) / STEP) * STEP));
   }
+  /* n°44 : JUPE MINIMALE DU MANTEAU — le tissage émergent (n°43) fait
+     chuter le plafond n°40 (capRow médiane ~112 m, 44 % des rangées
+     ≤ 100 m) : les quads 100 m de la grille traversés par la route
+     étaient sautés par la règle « 2 côtés » alors que le manteau ne
+     couvrait que ±edge → trous de 50-100 m le long de la couture
+     (291-318 points non couverts par fenêtre au banc, graine 42).
+     capRow étendu à 160 m minimum : au-delà du talus de déblai, les
+     colonnes portent H(x,z) ancré au monde (n°26/37) → un repli de
+     jupe aux kinks (R < 160 m, 11 % des rangées) superpose deux
+     couches de MÊME hauteur → invisible (intrusions au-dessus de la
+     plateforme route : 0 sur 3 graines). Lissage en rampe sur ±8
+     rangées : les paliers capRow (sauts jusqu'à 80 m entre rangées
+     voisines) deviennent des pentes que suivent les cordes de la
+     grille → chevauchement de couture 72 → 14 m, trous résiduels
+     291→6-16 par fenêtre (-94 à -98 %), build inchangé (~83 ms). */
+  const SKIRT = 160, SMOOTH = 8;
+  const base = Int32Array.from(capRow, (c) => Math.min(400, Math.max(c, SKIRT)));
+  for (let i = 0; i < n; i++) {
+    let sum = 0, cnt = 0;
+    for (let k = Math.max(0, i - SMOOTH); k <= Math.min(n - 1, i + SMOOTH); k++) { sum += base[k]; cnt++; }
+    capRow[i] = Math.max(SKIRT, Math.floor((sum / cnt) / STEP) * STEP);
+  }
   mantleCaps = capRow;   /* lu par buildMidFar pour la couture (même plafond) */
   for (let i = 0; i < n; i++) {
     const p = pts[i];

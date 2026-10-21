@@ -84,39 +84,39 @@
       <h2>Générateur de monde</h2>
       <p class="mut" style="margin-bottom:8px">Relief, mer, climat et familles de la course. L'explorateur de graines ci-dessus prévisualise AVEC ces réglages ; ils ne sont adoptés qu'au « Recréer la course » (persistés, rechargés au redémarrage).</p>
       <div class="frow">
-        <div><label>Relief macro — amplitude (m)</label><input id="wAmp1" type="number" step="10" min="0" max="2000"></div>
-        <div><label>Relief macro — longueur d'onde (m)</label><input id="wLam1" type="number" step="1000" min="8000" max="128000"></div>
+        <div><label>Relief macro — amplitude (m) (massifs&nbsp;: à 100 le monde devient plat, à 1000 le H dépasse ±1150&nbsp;m)</label><input id="wAmp1" type="number" step="10" min="0" max="2000"></div>
+        <div><label>Relief macro — longueur d'onde (m) (taille des massifs&nbsp;: plus petite = massifs plus petits et fréquents)</label><input id="wLam1" type="number" step="1000" min="8000" max="128000"></div>
       </div>
       <div class="frow">
-        <div><label>Collines — amplitude (m)</label><input id="wAmp2" type="number" step="5" min="0" max="600"></div>
-        <div><label>Collines — longueur d'onde (m)</label><input id="wLam2" type="number" step="500" min="2000" max="32000"></div>
+        <div><label>Collines — amplitude (m) (relief intermédiaire&nbsp;: doubler amène le H à ±857&nbsp;m)</label><input id="wAmp2" type="number" step="5" min="0" max="600"></div>
+        <div><label>Collines — longueur d'onde (m) (espacement des collines&nbsp;: plus petite = plus serrées)</label><input id="wLam2" type="number" step="500" min="2000" max="32000"></div>
       </div>
       <div class="frow">
-        <div><label>Collines locales — amplitude (m)</label><input id="wAmp3" type="number" step="1" min="0" max="200"></div>
-        <div><label>Collines locales — longueur d'onde (m)</label><input id="wLam3" type="number" step="100" min="500" max="8000"></div>
+        <div><label>Collines locales — amplitude (m) (bosselage à 2&nbsp;km ressenti pendant la course)</label><input id="wAmp3" type="number" step="1" min="0" max="200"></div>
+        <div><label>Collines locales — longueur d'onde (m) (fréquence des bosses locales)</label><input id="wLam3" type="number" step="100" min="500" max="8000"></div>
       </div>
       <div class="frow">
-        <div><label>Ravins fins — amplitude (m)</label><input id="wAmp4" type="number" step="1" min="0" max="100"></div>
-        <div><label>Ravins fins — longueur d'onde (m)</label><input id="wLam4" type="number" step="10" min="130" max="2000"></div>
+        <div><label>Ravins fins — amplitude (m) (au-delà de ~60 le relief devient chaotique, H ±753&nbsp;m)</label><input id="wAmp4" type="number" step="1" min="0" max="100"></div>
+        <div><label>Ravins fins — longueur d'onde (m) (finesse des creux et ravins&nbsp;: ne change pas les familles)</label><input id="wLam4" type="number" step="10" min="130" max="2000"></div>
       </div>
       <div class="frow">
-        <div><label>Niveau de la mer (m)</label><input id="wSea" type="number" step="10" min="-600" max="0"></div>
+        <div><label>Niveau de la mer (m) (−420&nbsp;: mer 3,9&nbsp;% et Littoral 5&nbsp;% ; défaut −240&nbsp;: mer 17,9&nbsp;%)</label><input id="wSea" type="number" step="10" min="-600" max="0"></div>
         <div><label>&nbsp;</label></div>
       </div>
       <div class="frow">
-        <div><label>Température de base (°C)</label><input id="wTempBase" type="number" step="1" min="-5" max="35"></div>
-        <div><label>Amplitude latitude (°C)</label><input id="wTempLat" type="number" step="1" min="0" max="30"></div>
+        <div><label>Température de base (°C) (décale tout le climat du monde vers plus chaud/froid)</label><input id="wTempBase" type="number" step="1" min="-5" max="35"></div>
+        <div><label>Amplitude latitude (°C) (à 0 le Boréal disparaît&nbsp;: plus de nord froid, 28→0&nbsp;%)</label><input id="wTempLat" type="number" step="1" min="0" max="30"></div>
       </div>
       <div class="frow">
-        <div><label>Étage altitude (m)</label><input id="wFamAlt" type="number" step="10" min="80" max="600"></div>
-        <div><label>Seuil littoral (0-1)</label><input id="wFamCoast" type="number" step="0.05" min="0.1" max="0.9"></div>
+        <div><label>Étage altitude (m) (plus haut = moins de km en Altitude&nbsp;: 320&nbsp;→ 13&nbsp;% au lieu de 24&nbsp;%)</label><input id="wFamAlt" type="number" step="10" min="80" max="600"></div>
+        <div><label>Seuil littoral (0-1) (plus haut = moins de km côtiers)</label><input id="wFamCoast" type="number" step="0.05" min="0.1" max="0.9"></div>
       </div>
       <div class="frow">
-        <div><label>Seuil désert — humidité sous (0-1)</label><input id="wFamDry" type="number" step="0.01" min="0" max="0.5"></div>
-        <div><label>Seuil forêt — humidité sur (0-1)</label><input id="wFamWet" type="number" step="0.01" min="0.4" max="0.9"></div>
+        <div><label>Seuil désert — humidité sous (0-1) (BAISSER pour plus d'aride&nbsp;: 0,30→0,15 = Désert 6→1&nbsp;%)</label><input id="wFamDry" type="number" step="0.01" min="0" max="0.5"></div>
+        <div><label>Seuil forêt — humidité sur (0-1) (plus haut = moins de forêts)</label><input id="wFamWet" type="number" step="0.01" min="0.4" max="0.9"></div>
       </div>
       <div class="frow">
-        <div><label>Seuil boréal — température sous (°C)</label><input id="wFamCold" type="number" step="0.5" min="-5" max="15"></div>
+        <div><label>Seuil boréal — température sous (°C) (plus haut = plus de km boréaux)</label><input id="wFamCold" type="number" step="0.5" min="-5" max="15"></div>
         <div><label>&nbsp;</label><button id="wDefaults" style="width:100%;background:#0b0f14;color:var(--txt);border:1px solid var(--line);border-radius:5px;padding:7px;cursor:pointer">Réglages par défaut</button></div>
       </div>
     </div>
