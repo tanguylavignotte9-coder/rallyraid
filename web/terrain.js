@@ -222,13 +222,97 @@ export function closedAt(x, y, seed) {
   return mn;
 }
 
-export function obstCost(x, y, seed, wLake, wMarsh, wFor) {
-  const c = closedAt(x, y, seed);
+export function obstCost(x, y, seed, wLake, wMarsh, wFor, wRiv = 0) {
+  /* n°51 — les 4 sondes de closedAt servent AUSSI la vallée
+     directionnelle (gué) : une seule passe de 5 HO4 + moistAt + tempAt.
+     wRiv = 0 par défaut → les appels 4-args du n°50 restent inchangés
+     au bit près (le terme riv est exactement 0). */
+  const h0 = HO4(x, y, seed);
+  const eU = HO4(x + LAKE_R, y, seed) - h0;
+  const wU = HO4(x - LAKE_R, y, seed) - h0;
+  const nU = HO4(x, y + LAKE_R, seed) - h0;
+  const sU = HO4(x, y - LAKE_R, seed) - h0;
+  const c = Math.min(eU, wU, nU, sU);
   const lake = ss(LAKE_D, LAKE_D + 6, c);
   const m = moistAt(x, y, seed);
   const marsh = ss(MARSH_D, MARSH_D + 3, c) * ss(0.62, 0.78, m);
   const forest = ss(0.78, 0.92, m) * ss(2, 8, tempAt(x, y, seed));
-  return wLake * lake + wMarsh * marsh + wFor * forest;
+  const riv = riverRaw(eU, wU, nU, sU, m);
+  return wLake * lake + wMarsh * marsh + wFor * forest + wRiv * riv;
+}
+
+/* ============================================================
+   n°51 — MONDE CRÉDIBLE P2 : VILLAGES D'ABORD, GUÉS, FORÊT MACRO
+   Jumeau JS de core/terrain.ts — IDENTIQUE au bit près
+   (tests/terrain-web.test.ts). La description complète est dans
+   core/terrain.ts.
+   ============================================================ */
+
+/* vallée directionnelle (mêmes sondes que closedAt) — privée */
+function riverRaw(eU, wU, nU, sU, m) {
+  const vNS = ss(6, 14, Math.min(eU, wU)) * ss(-1.5, -5, Math.min(nU, sU));
+  const vEW = ss(6, 14, Math.min(nU, sU)) * ss(-1.5, -5, Math.min(eU, wU));
+  return Math.max(vNS, vEW) * ss(0.30, 0.36, m);
+}
+export const RIV_R = 600;
+
+export function riverAt(x, y, seed) {
+  const h0 = HO4(x, y, seed);
+  const eU = HO4(x + RIV_R, y, seed) - h0;
+  const wU = HO4(x - RIV_R, y, seed) - h0;
+  const nU = HO4(x, y + RIV_R, seed) - h0;
+  const sU = HO4(x, y - RIV_R, seed) - h0;
+  return riverRaw(eU, wU, nU, sU, moistAt(x, y, seed));
+}
+
+export const VILL_CELL = 1400;
+export const VILL_P = [0.40, 0.09, 0.20, 0.056, 0.10, 0.32];
+export const FARM_P = [0.14, 0.032, 0.072, 0.018, 0.036, 0.12];
+export const VILL_COLD = -8;
+export const VILL_SNOW = 300;
+
+export function villageCell(ix, iy, seed) {
+  const jx = ghash(ix, iy, seed + 401), jy = ghash(ix, iy, seed + 402);
+  const cx = (ix + 0.25 + 0.5 * jx) * VILL_CELL;
+  const cy = (iy + 0.25 + 0.5 * jy) * VILL_CELL;
+  const fam = famAt(cx, cy, seed);
+  const u = ghash(ix, iy, seed + 403);
+  let kind;
+  if (u < VILL_P[fam]) kind = 'village';
+  else if (u < VILL_P[fam] + FARM_P[fam]) kind = 'farm';
+  else return null;
+  const c = closedAt(cx, cy, seed);
+  if (c > 2 || c < -14) return null;
+  if (tempAt(cx, cy, seed) < VILL_COLD) return null;
+  if (Hroad(cx, cy, seed) > VILL_SNOW) return null;
+  let hMin = Infinity, hMax = -Infinity;
+  for (let a = -50; a <= 50; a += 25)
+    for (let b = -50; b <= 50; b += 25) {
+      const v = H(cx + a, cy + b, seed);
+      if (v < hMin) hMin = v;
+      if (v > hMax) hMax = v;
+    }
+  if ((hMax - hMin) / 100 > 0.12) return null;
+  return { x: cx, y: cy, kind, fam };
+}
+
+export function villageNear(x, y, seed, memo) {
+  const ix = Math.floor(x / VILL_CELL), iy = Math.floor(y / VILL_CELL);
+  let dmin = Infinity;
+  for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+    const key = (ix + di) * 67108864 + (iy + dj);
+    let v = memo.get(key);
+    if (v === undefined) { v = villageCell(ix + di, iy + dj, seed); memo.set(key, v); }
+    if (v && v.kind === 'village') {
+      const d = Math.hypot(v.x - x, v.y - y);
+      if (d < dmin) dmin = d;
+    }
+  }
+  return dmin;
+}
+
+export function forestAt(x, y, seed) {
+  return ss(0.78, 0.92, moistAt(x, y, seed)) * ss(2, 8, tempAt(x, y, seed));
 }
 
 export const CAUSEWAY_H = 12;

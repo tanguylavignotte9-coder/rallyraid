@@ -23,7 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { H, Hroad, WP, setWorldParams, ss, coastAt, tempAt, moistAt, famAt, flowAccum } from './terrain.js';
+import { H, Hroad, WP, setWorldParams, ss, coastAt, tempAt, moistAt, famAt, flowAccum, villageCell, VILL_CELL } from './terrain.js';
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -357,7 +357,8 @@ async function refreshWorld() {
     villageLights = [];
     winS0 = s0;
     /* n°33 : grille d'écoulement AVANT les couches qui la lisent
-       (buildVillages : porte eau ; buildWater : rivières causales). */
+       (n°51 : buildVillages lit désormais le champ monde villageCell —
+       ne lit PLUS la grille ; seule buildWater la lit : rivières causales). */
     hydro = buildHydro(d);
     /* n°32 : fondu longitudinal des segs — 1 aux points pont/tunnel,
        fondu linéaire sur 10 points (160 m) autour, 0 ailleurs.
@@ -1264,16 +1265,21 @@ function buildRidges(group, d) {
 }
 
 /* ============================================================
-   n°22 — VILLAGES (plaine) + FERMES ISOLÉES
-   REPÈRES placés par HASH PUR de cellule (500 m d'arc) : reconstruits
-   À L'IDENTIQUE au rebuild de la fenêtre. Chaque maison est posée à
-   SA position H (n°26), filtrée par praticabilité de pente.
+   n°22 — VILLAGES (plaine) + FERMES ISOLÉES — n°51 : le bourg est un
+   CHAMP DU MONDE (villageCell, terrain.js — le MÊME champ que celui
+   que la route esquive : cohérence route↔rendu par champ partagé).
+   Le rendu itère les cellules MONDE de la bbox de la fenêtre
+   (+ 1 500 m) : plus AUCUN ancrage route (plus de p.hd, plus de
+   winS0) — le placement n°33 (famille du lieu, eau-vallée, temp,
+   neige, praticabilité) vit DANS villageCell (core/terrain.ts).
+   Maisons/clochers/lumières par posHash(ix * 1013 + iy, sel) :
+   reconstruits À L'IDENTIQUE au rebuild de la fenêtre (ADR 0004
+   d'esprit). Chaque maison reste posée à SA position H (n°26)
+   via terrainAtXY.
    ============================================================ */
 function buildVillages(group, d) {
   const pts = d.pts;
   const seed = snap?.seed ?? 42;
-  const VILL_P = [0.022, 0.006, 0.012, 0.003, 0.005, 0.018];
-  const FARM_P = [0.008, 0.002, 0.004, 0.001, 0.002, 0.006];
   villageLights = [];
   villageGroups = [];
   const wallGeo = new THREE.BoxGeometry(6, 4, 5);
@@ -1288,65 +1294,44 @@ function buildVillages(group, d) {
     walls.push([x, y, z, rot]);
     roofs.push([x, y, z, rot]);
   };
-  for (let cell = Math.floor(winS0 / 500); cell <= Math.floor((winS0 + pts.length * STEP) / 500); cell++) {
-    /* position route du centre de cellule */
-    const sCell = cell * 500 - winS0;
-    const i = Math.round(sCell / STEP);
-    if (i < 2 || i >= pts.length - 2) continue;
-    const p = pts[i];
-    const side = posHash(cell, 8) < 0.5 ? -1 : 1;
-    const nx = -Math.sin(p.hd), nz = Math.cos(p.hd);
-    /* n°33 : 2 TEMPS — le lieu est sonné à distance VILLAGE (350-1 200 m)
-       et gaté par la famille DU LIEU (famAt à la position, pas l'étiquette
-       du point route) : un lieu désertique n'accueille pas un village de
-       plaine. S'il n'est pas village, on retente en FERME (250-550 m),
-       re-gaté par FARM_P de la famille du nouveau lieu. */
-    let dist = 350 + posHash(cell, 10) * 850;
-    let cx = p.x + nx * side * dist, cz = p.y + nz * side * dist;
-    let famLoc = famAt(cx, cz, seed);
-    let isVillage = posHash(cell, 7) < VILL_P[famLoc];
-    if (!isVillage) {
-      dist = 250 + posHash(cell, 10) * 300;
-      cx = p.x + nx * side * dist; cz = p.y + nz * side * dist;
-      famLoc = famAt(cx, cz, seed);
-      if (posHash(cell, 9) >= FARM_P[famLoc]) continue;
-    }
-    /* n°33 — VILLAGES CAUSAUX : l'eau d'abord (accumulation hydro
-       ≥ 60 — 25 en désert où chaque oued compte), dans un rayon de
-       600 m ; la température ensuite (≥ −8 °C) ; jamais au-dessus de
-       la ligne de neige (plateforme Hroad ≤ SNOW_ALT). Un village
-       vit là où on PEUT vivre — le hash ne garde que le détail. */
-    if (hydroAccMax(cx, cz, 600) < (famLoc === 1 ? 25 : 60)) continue;
-    if (tempAt(cx, cz, seed) < -8) continue;
-    if (Hroad(cx, cz, seed) > SNOW_ALT) continue;
-    let hMin = Infinity, hMax = -Infinity;
-    for (let a = -50; a <= 50; a += 25)
-      for (let b2 = -50; b2 <= 50; b2 += 25) {
-        const v = H(cx + a, cz + b2, seed);
-        if (v < hMin) hMin = v;
-        if (v > hMax) hMax = v;
-      }
-    if ((hMax - hMin) / 100 > 0.12) continue;   // terrain non praticable
-    const l1y = terrainAtXY(p, cx, cz);
-    const nHouse = isVillage ? 6 + Math.floor(posHash(cell, 12) * 13) : 2;
-    const radius = isVillage ? 40 + posHash(cell, 13) * 80 : 12;
+  /* bbox monde de la fenêtre + 1 500 m : les bourgs « survolés » par le
+     snap POI (rayon 2 200 m) et les rocades (700 m) sont dessinés */
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (const p of pts) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minZ) minZ = p.y; if (p.y > maxZ) maxZ = p.y;
+  }
+  const p0 = pts[0];   // terrainAtXY n'utilise pas p (H(x, z) monde)
+  const i0 = Math.floor((minX - 1500) / VILL_CELL), i1 = Math.floor((maxX + 1500) / VILL_CELL);
+  const j0 = Math.floor((minZ - 1500) / VILL_CELL), j1 = Math.floor((maxZ + 1500) / VILL_CELL);
+  for (let ix = i0; ix <= i1; ix++) for (let iy = j0; iy <= j1; iy++) {
+    const v = villageCell(ix, iy, seed);
+    if (!v) continue;
+    const isVillage = v.kind === 'village';
+    const cx = v.x, cz = v.y;
+    /* orientation des maisons par hash MONDE (plus de cap route) */
+    const key = ix * 1013 + iy;
+    const rotBase = posHash(key, 21) * Math.PI * 2;
+    const nHouse = isVillage ? 6 + Math.floor(posHash(key, 12) * 13) : 2;
+    const radius = isVillage ? 40 + posHash(key, 13) * 80 : 12;
     for (let h = 0; h < nHouse; h++) {
-      const ang = (h / nHouse) * Math.PI * 2 + posHash(cell * 10 + h, 14) * 0.5;
-      const rr = radius * (0.55 + posHash(cell * 10 + h, 15) * 0.7);
+      const ang = (h / nHouse) * Math.PI * 2 + posHash(key * 10 + h, 14) * 0.5;
+      const rr = radius * (0.55 + posHash(key * 10 + h, 15) * 0.7);
       const hx = cx + Math.cos(ang) * rr, hz = cz + Math.sin(ang) * rr;
-      const rot = p.hd + (posHash(cell * 10 + h, 16) - 0.5) * 0.9;
-      pushHouse(hx, terrainAtXY(p, hx, hz), hz, rot);
+      const rot = rotBase + (posHash(key * 10 + h, 16) - 0.5) * 0.9;
+      pushHouse(hx, terrainAtXY(p0, hx, hz), hz, rot);
     }
     /* clocher sur ~1 village sur 2 */
-    if (isVillage && posHash(cell, 17) < 0.5) churches.push([cx, terrainAtXY(p, cx, cz), cz, p.hd]);
-    /* NUIT : points lumineux chauds — allumés avec les POI */
+    if (isVillage && posHash(key, 17) < 0.5)
+      churches.push([cx, terrainAtXY(p0, cx, cz), cz, rotBase]);
+    /* nuit : points lumineux chauds — allumés avec les POI */
     if (isVillage) {
-      const nL = 4 + Math.floor(posHash(cell, 18) * 6);
+      const nL = 4 + Math.floor(posHash(key, 18) * 6);
       for (let l = 0; l < nL; l++) {
-        const ang = posHash(cell * 10 + l, 19) * Math.PI * 2;
-        const rr = radius * posHash(cell * 10 + l, 20);
+        const ang = posHash(key * 10 + l, 19) * Math.PI * 2;
+        const rr = radius * posHash(key * 10 + l, 20);
         const g = new THREE.Points(
-          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(cx + Math.cos(ang) * rr, terrainAtXY(p, cx + Math.cos(ang) * rr, cz + Math.sin(ang) * rr) + 3, cz + Math.sin(ang) * rr)]),
+          new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(cx + Math.cos(ang) * rr, terrainAtXY(p0, cx + Math.cos(ang) * rr, cz + Math.sin(ang) * rr) + 3, cz + Math.sin(ang) * rr)]),
           new THREE.PointsMaterial({ color: 0xffd9a0, size: 3, transparent: true, opacity: 0 }));
         group.add(g);
         villageLights.push(g);

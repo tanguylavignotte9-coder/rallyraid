@@ -9,12 +9,16 @@ import {
   coastAt as cac, tempAt as tac, moistAt as mac, famAt as fac,
   ss as ssc, SEA_SL, windAt as wac, flowAccum as facc,
   HO4 as HO4c, closedAt as clc, obstCost as occ,
+  riverAt as rivc, villageCell as vcc, villageNear as vnc, forestAt as foc,
+  VILL_CELL as VCc, VILL_P as VPc,
 } from '../core/terrain.ts';
 import {
   H as Hw, Hroad as Hrw, Hmacro as Hmw, HroadC as Hrcw,
   coastAt as caw, tempAt as taw, moistAt as maw, famAt as faw,
   ss as ssw, SEA_SL as SLw, windAt as waw, flowAccum as facw,
   HO4 as HO4w, closedAt as clw, obstCost as ocw,
+  riverAt as rivw, villageCell as vcw, villageNear as vnw, forestAt as fow,
+  VILL_CELL as VCw, VILL_P as VPw,
 } from '../web/terrain.js';
 
 test('26/33 : champs navigateur identiques au cœur (bit à bit)', () => {
@@ -68,6 +72,35 @@ test('50 : signaux d\'obstacles navigateur identiques au cœur (bit à bit)', ()
     assert.equal(clw(x, y, seed), clc(x, y, seed), `closedAt(${x}, ${y}, ${seed})`);
     assert.equal(ocw(x, y, seed, 12, 3, 1.5), occ(x, y, seed, 12, 3, 1.5),
       `obstCost(${x}, ${y}, ${seed})`);
+    n++;
+  }
+  assert.ok(n >= 1000, `${n} points vérifiés`);
+});
+
+test('51 : villages / gué / forêt macro navigateur identiques au cœur (bit à bit)', () => {
+  /* n°51 — riverAt (gué), villageCell (champ de villages), villageNear
+     (répulsion rocade), forestAt (forêt macro) et obstCost à 7 args
+     (wRiv ≠ 0 — les sondes partagées closedAt/riverRaw) doivent être
+     identiques entre core et web. villageCell renvoie null ou un objet :
+     comparaison par JSON. */
+  assert.equal(VCw, VCc, 'VILL_CELL');
+  assert.deepEqual(VPw, VPc, 'VILL_P');
+  let n = 0;
+  const memoC = new Map(), memoW = new Map();
+  for (let i = 0; i < 1200; i++) {
+    const x = (i * 173) % 40000 - 20000 + (i % 7) * 53;
+    const y = (i * 311) % 40000 - 20000 + (i % 11) * 97;
+    const seed = [42, 12345, 777][i % 3]!;
+    assert.equal(rivw(x, y, seed), rivc(x, y, seed), `riverAt(${x}, ${y}, ${seed})`);
+    assert.equal(fow(x, y, seed), foc(x, y, seed), `forestAt(${x}, ${y}, ${seed})`);
+    assert.equal(ocw(x, y, seed, 12, 3, 1.5, 2), occ(x, y, seed, 12, 3, 1.5, 2),
+      `obstCost 7-args(${x}, ${y}, ${seed})`);
+    const vc = vcc(Math.floor(x / VCc), Math.floor(y / VCc), seed);
+    const vw = vcw(Math.floor(x / VCc), Math.floor(y / VCc), seed);
+    assert.equal(JSON.stringify(vw), JSON.stringify(vc),
+      `villageCell(${Math.floor(x / VCc)}, ${Math.floor(y / VCc)}, ${seed})`);
+    assert.equal(vnw(x, y, seed, memoW), vnc(x, y, seed, memoC),
+      `villageNear(${x}, ${y}, ${seed})`);
     n++;
   }
   assert.ok(n >= 1000, `${n} points vérifiés`);

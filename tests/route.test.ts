@@ -208,14 +208,18 @@ test('route V3 : variété macro — caps fenêtrés 50 km et avancement net', (
     /* avancement net = corde A→B / distance XY réellement parcourue —
        n°43 : la route émergente suit la polyline de près (budget de cap
        serré, enveloppe 3-3,8 km) : net mesuré 78,0-85,7 % (4 graines,
-       2000 km) → [75..90]. */
+       2000 km) → [75..90].
+       n°51 : les ROCADES (répulsion des bourgs) et l'esquive macro
+       forêt détournent la route — certains itinéraires s'allongent
+       volontairement : net mesuré 72,2 (424242) / 76,3 (20261016) /
+       79,3 (777) / 80,7 (12345) → borne basse 72. */
     let drivenXY = 0;
     for (let i = 1; i < pts.length; i++) {
       drivenXY += Math.hypot(pts[i]!.x - pts[i - 1]!.x, pts[i]!.y - pts[i - 1]!.y);
     }
     const net = Math.hypot(B.x - A.x, B.y - A.y) / drivenXY;
-    assert.ok(net >= 0.75 && net <= 0.90,
-      `graine ${seed} : avancement net ${(net * 100).toFixed(0)}% hors [75..90]`);
+    assert.ok(net >= 0.72 && net <= 0.90,
+      `graine ${seed} : avancement net ${(net * 100).toFixed(0)}% hors [72..90]`);
   }
 });
 
@@ -363,11 +367,12 @@ test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)'
      premiers 25000/54560/79456:station). C'est une NOUVELLE version de
      route : re-set des courses en cours (arbitrage assumé). */
   const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
-  /* n°50 : la route esquive → la famille aux points bouge → le curseur
-     POI aussi (mesuré : 18 POI, les 3 PREMIERS inchangés). */
-  assert.equal(pa.length, 18, 'POI n°50 (graine 12345, 600 km)');
+  /* n°51 : POI diégétiques — le POI se snappe au point d'approche
+     maximale route↔bourg (design P2, banc bench-n51) → les positions
+     bougent (mesuré : 18 POI, les 3 premiers 21160/56768/76096). */
+  assert.equal(pa.length, 18, 'POI n°51 (graine 12345, 600 km)');
   assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
-    ['25000:station', '54560:station', '79456:station'], 'positions POI (3 premiers inchangés)');
+    ['21160:station', '56768:station', '76096:station'], 'positions POI n°51 (diégétiques)');
 });
 
 test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {

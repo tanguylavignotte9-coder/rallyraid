@@ -54,6 +54,7 @@
 
 import { mulberry32, SEG, type Track } from './engine.ts';
 import { H, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss, obstCost } from './terrain.ts';
+import { villageNear, forestAt, villageCell, VILL_CELL } from './terrain.ts';   // n°51 : champ de villages + gué (obstCost étendu wRiv)
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -154,14 +155,17 @@ export function buildWaypoints(seed: number, totalKm: number): Waypoint[] {
          avec elle, traverser un bras de mer reste POSSIBLE (le
          causeway HroadC le permet), mais longer les grandes étendues
          est nettement préféré. */
-      let hSum = 0, wet = 0;
+      let hSum = 0, wet = 0, forSum = 0;
       for (let q = 0; q <= 8; q++) {
         const qx = x + (nx - x) * q / 8, qy = y + (ny - y) * q / 8;
         const hv = H(qx, qy, seed);
         hSum += hv;
         if (hv < WP.seaLevel) wet++;
+        /* n°51 : forêt dense aux sondes (macro) */
+        forSum += forestAt(qx, qy, seed);
       }
-      const cost = hSum / 9 + 40 * Math.abs(db) + 700 * wet / 9;
+      const cost = hSum / 9 + 40 * Math.abs(db) + 700 * wet / 9
+                 + ER.wForMac * forSum;
       if (!best || cost < best.cost) best = { b: bNew, x: nx, y: ny, cost };
     }
     if (best) { x = best.x; y = best.y; bearing = best.b; }
@@ -243,6 +247,23 @@ const ER = {
   wLake: 12,
   wMarsh: 3,
   wFor: 1.5,
+  /* n°51 — MONDE CRÉDIBLE P2 : villages d'abord, gués, forêt macro.
+     wVill : répulsion bourg — la rocade passe à villKeep (m) du
+     centre, la répulsion s'étend jusqu'à villR ; calibré banc n°51
+     (la traversée d'un bourg = 1e7 interdit ? NON : les villages
+     sont PAISIBLES — répulsion douce, pas interdiction). wRiv : le
+     gué — on paie le TEMPS DANS LE THALWEG (riverAt, proxy creux
+     entouré + exutoire + humide) : longer la rivière coûte cher,
+     la traverser franchement 1-2 échantillons → angles droits
+     émergents. wForMac : forêt au MACRO — le coût des jambes de
+     waypoints paie la forêt dense aux 9 sondes (les MASSIFS
+     climatiques 140-480 km se skirtent sur plusieurs jambes ; le
+     wFor 1.5 du n°50 ne voyait que les boqueteaux). */
+  wVill: 35,
+  villKeep: 300,
+  villR: 700,
+  wRiv: 2,
+  wForMac: 100,
 };
 
 /* ---- mémoire anti-croisement : buckets de 250 m des segments commis.
@@ -420,6 +441,11 @@ export function buildChunk(rt: Route, k: number): Chunk {
   const sea = WP.seaLevel;
   let x = e.x, y = e.y, alt = e.h, hdC = e.hd, steerPrev = e.steerPrev ?? 0;
   let wpIdx = e.wpIdx;
+  /* n°51 : memo du champ de villages — cache de la fonction PURE
+     villageCell par clé de cellule monde (1 400 m) ; partagé par le
+     contrôleur et la passe POI du chunk. La régénération d'un chunk
+     ancien redonne les MÊMES valeurs (le memo n'est qu'un cache). */
+  const vmemo = new Map();
 
   /* la cible d'altitude du limiteur : le relief RÉEL (H, octaves fines
      n°43 comprises), causeway à seaLevel+3 m sur l'eau */
@@ -479,6 +505,20 @@ export function buildChunk(rt: Route, k: number): Chunk {
       const dLat = Math.hypot(a.x + dx * t - x, a.y + dy * t - y);
       if (dLat > ER.leash) leashPen = 400 * (dLat - ER.leash);
     }
+    /* n°51 — bourgs à portée du pas : 3×3 cellules du champ (les 26
+       échantillons des 13 caps sont à ≤ 192 m du pas ; une influence
+       au-delà de ~1 700 m est nulle → 3×3 suffit, coût = 9 lookups
+       PARTAGÉS par les 13 caps au lieu d'un par échantillon). */
+    const vlist: { x: number; y: number }[] = [];
+    {
+      const cix = Math.floor(x / VILL_CELL), ciy = Math.floor(y / VILL_CELL);
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+        const key = (cix + di) * 67108864 + (ciy + dj);
+        let v = vmemo.get(key);
+        if (v === undefined) { v = villageCell(cix + di, ciy + dj, rt.seed); vmemo.set(key, v); }
+        if (v && v.kind === 'village') vlist.push(v);
+      }
+    }
     /* ---- choix du cap candidat au moindre coût ---- */
     let best: { cost: number; d: number } | null = null;
     const dOld = new Float64Array(ER.cands.length);
@@ -499,8 +539,14 @@ export function buildChunk(rt: Route, k: number): Chunk {
          la position au sous-pas j = x + cap·j·8 m, EXACTE. */
       let obst = 0;
       for (let j = ER.obstEvery; j <= ER.lookC; j += ER.obstEvery) {
-        obst += obstCost(x + Math.cos(hd2) * j * SEG, y + Math.sin(hd2) * j * SEG,
-                         rt.seed, ER.wLake, ER.wMarsh, ER.wFor);
+        const ox = x + Math.cos(hd2) * j * SEG, oy = y + Math.sin(hd2) * j * SEG;
+        let dv = Infinity;
+        for (const v of vlist) {
+          const d = Math.hypot(v.x - ox, v.y - oy);
+          if (d < dv) dv = d;
+        }
+        obst += obstCost(ox, oy, rt.seed, ER.wLake, ER.wMarsh, ER.wFor, ER.wRiv)
+              + ER.wVill * ss(ER.villR, ER.villKeep, dv);
       }
       const pur = wpWrap(hd2 - hdMac);
       const steepPen = Math.max(0, steep - ER.gentleS) ** 2 * ER.wSteep;
@@ -577,6 +623,34 @@ export function buildChunk(rt: Route, k: number): Chunk {
       s += (POI_BASE[kind]! * 1000 / Math.max(0.2, poiDensity)) * fac * (0.7 + 0.6 * rand());
     }
     cursor[kind] = s;
+  }
+  /* ---- n°51 — POI DIÉGÉTIQUES : si un bourg vit à moins de 2200 m
+     du curseur, le POI se pose au POINT D'APPROCHE MAXIMALE
+     route↔bourg (l'entrée de la rocade — là où une vraie station
+     serait). Sinon il reste à sa position curseur : le désert a ses
+     stations isolées, réaliste. Pur : villageCell est une fonction
+     de (graine, cellule) — le snap est déterministe, le PRNG du
+     chunk garde le même flux. Deux POI ne partagent pas un même
+     point d'approche (écart minimum 350 m). Scan CHUNK-LOCAL : un
+     POI dont le bourg est dans le chunk précédent reste curseur
+     (cas frontière, rare). ---- */
+  const snapUsed: number[] = [];
+  for (const p of pois) {
+    let bestD = Infinity, bestS = p.s;
+    for (let ds = -4800; ds <= 4800; ds += 96) {
+      const s2 = p.s + ds;
+      if (s2 < s0 || s2 >= end) continue;
+      const i2 = Math.floor((s2 - s0) / SEG);
+      if (i2 < 0 || i2 >= RSAMP) continue;
+      const d = villageNear(e.x + xs[i2]!, e.y + zs[i2]!, rt.seed, vmemo);
+      if (d < bestD) { bestD = d; bestS = s2; }
+    }
+    if (bestD >= 2200) continue;
+    let sNew = bestS;
+    for (const su of snapUsed) while (Math.abs(sNew - su) < 350) sNew += 96;
+    if (sNew >= end) continue;   // collision en bout de chunk → POI curseur
+    snapUsed.push(sNew);
+    p.s = sNew;
   }
   pois.sort((a, b) => a.s - b.s);
 

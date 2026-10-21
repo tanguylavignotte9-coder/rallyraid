@@ -305,13 +305,145 @@ export function closedAt(x: number, y: number, seed: number): number {
 }
 
 export function obstCost(x: number, y: number, seed: number,
-                        wLake: number, wMarsh: number, wFor: number): number {
-  const c = closedAt(x, y, seed);
+                        wLake: number, wMarsh: number, wFor: number, wRiv = 0): number {
+  /* n°51 — les 4 sondes de closedAt servent AUSSI la vallée
+     directionnelle (gué) : une seule passe de 5 HO4 + moistAt + tempAt.
+     wRiv = 0 par défaut → les appels 4-args du n°50 restent inchangés
+     au bit près (le terme riv est exactement 0). */
+  const h0 = HO4(x, y, seed);
+  const eU = HO4(x + LAKE_R, y, seed) - h0;
+  const wU = HO4(x - LAKE_R, y, seed) - h0;
+  const nU = HO4(x, y + LAKE_R, seed) - h0;
+  const sU = HO4(x, y - LAKE_R, seed) - h0;
+  const c = Math.min(eU, wU, nU, sU);
   const lake = ss(LAKE_D, LAKE_D + 6, c);
   const m = moistAt(x, y, seed);
   const marsh = ss(MARSH_D, MARSH_D + 3, c) * ss(0.62, 0.78, m);
   const forest = ss(0.78, 0.92, m) * ss(2, 8, tempAt(x, y, seed));
-  return wLake * lake + wMarsh * marsh + wFor * forest;
+  const riv = riverRaw(eU, wU, nU, sU, m);
+  return wLake * lake + wMarsh * marsh + wFor * forest + wRiv * riv;
+}
+
+/* ============================================================
+   n°51 — MONDE CRÉDIBLE P2 : VILLAGES D'ABORD, GUÉS, FORÊT MACRO
+   (design arbitré 2026-10-21, banc bench-n51). VILLAGES : le bourg
+   devient un CHAMP DU MONDE (grille VILL_CELL, centre jitteré par
+   ghash), CAUSAL — les portes du placement n°33 du rendu (famille du
+   lieu, eau à proximité, température, ligne de neige, praticabilité)
+   mais PUR de (graine, x, y) : le rendu dessine LES MÊMES villages
+   (world3d lit le champ — plus jamais d'ancrage route). EAU : le
+   rendu gatait par hydroAccMax (D8 de fenêtre) ; côté route un D8
+   par chunk est hors budget → PROXY : vivre DANS la vallée
+   [closedAt ∈ -14..+2 m] — près du thalweg sans être dedans (pas
+   dans le lac, pas sur la crête). La cohérence route↔rendu vient du
+   champ PARTAGÉ (les deux lisent villageCell — terrain-web.test).
+   RIVIÈRE (gué) : vallée DIRECTIONNELLE — murs de part et d'autre
+   (sondes E/W hautes OU N/S hautes) + exutoire dans l'axe + humidité
+   (la même porte que les rivières du rendu n°33). Le coût wRiv paie
+   le TEMPS DANS LE THALWEG : longer coûte cher, franchir 1-2
+   échantillons → traversées courtes et perpendiculaires (gués).
+   FORÊT MACRO : forestAt est le même signal que le wFor n°50
+   (boqueteaux) lu à l'échelle des jambes de waypoints (18-45 km) :
+   les MASSIFS climatiques (140-480 km) se skirtent sur plusieurs
+   jambes. Tout est PUR — zéro PRNG (ADR 0004). Jumeau
+   web/terrain.js IDENTIQUE au bit près (terrain-web.test).
+   ============================================================ */
+
+/* vallée directionnelle (mêmes sondes que closedAt) — privée */
+function riverRaw(eU: number, wU: number, nU: number, sU: number, m: number): number {
+  /* vallée N-S : murs E et W, exutoire dans l'axe N/S ;
+     vallée E-W : murs N et S, exutoire dans l'axe E/W ;
+     un lac fermé (les 4 sondes hautes) ne déclenche AUCUNE des
+     deux ; une crête (les 4 basses) non plus. */
+  const vNS = ss(6, 14, Math.min(eU, wU)) * ss(-1.5, -5, Math.min(nU, sU));
+  const vEW = ss(6, 14, Math.min(nU, sU)) * ss(-1.5, -5, Math.min(eU, wU));
+  return Math.max(vNS, vEW) * ss(0.30, 0.36, m);
+}
+export const RIV_R = 600;   // m : rayon de sonde (LAKE_R — les mêmes sondes)
+
+export function riverAt(x: number, y: number, seed: number): number {
+  const h0 = HO4(x, y, seed);
+  const eU = HO4(x + RIV_R, y, seed) - h0;
+  const wU = HO4(x - RIV_R, y, seed) - h0;
+  const nU = HO4(x, y + RIV_R, seed) - h0;
+  const sU = HO4(x, y - RIV_R, seed) - h0;
+  return riverRaw(eU, wU, nU, sU, moistAt(x, y, seed));
+}
+
+/* ---- champ de villages : grille monde VILL_CELL (1 400 m) ---- */
+export const VILL_CELL = 1400;
+/* probabilité par cellule et par FAMILLE du lieu (banc n°51 : la
+   plaine vit, le désert reste presque vide — calibration sur
+   l'ancien placement n°33 du rendu, densité ~un bourg tous les
+   10-15 km de corridor) */
+export const VILL_P = [0.40, 0.09, 0.20, 0.056, 0.10, 0.32];
+export const FARM_P = [0.14, 0.032, 0.072, 0.018, 0.036, 0.12];
+export const VILL_COLD = -8;      // °C — la même porte que le rendu
+export const VILL_SNOW = 300;    // m — la ligne de neige du rendu
+
+export type Vill = { x: number; y: number; kind: 'village' | 'farm'; fam: number };
+
+/* village d'une cellule (ix, iy) — PUR : null ou le lieu complet.
+   - centre jitteré dans la cellule (marge 0.25..0.75 : le rayon du
+     bourg 40-120 m + les maisons ne débordent jamais chez le voisin) ;
+   - PORTE FAMILLE : VILL_P[famAt(site)] ;
+   - PORTE EAU : closedAt(site) ∈ [-14, +2] m ;
+   - TEMPÉRATURE ≥ -8 °C, plateforme Hroad ≤ 300 m ;
+   - PRATICABILITÉ : (hMax - hMin)/100 ≤ 0.12 sur ±50 m (le test du
+     rendu n°33) ;
+   - FERME : deuxième tranche de ghash → kind='farm'. */
+export function villageCell(ix: number, iy: number, seed: number): Vill | null {
+  const jx = ghash(ix, iy, seed + 401), jy = ghash(ix, iy, seed + 402);
+  const cx = (ix + 0.25 + 0.5 * jx) * VILL_CELL;
+  const cy = (iy + 0.25 + 0.5 * jy) * VILL_CELL;
+  const fam = famAt(cx, cy, seed);
+  const u = ghash(ix, iy, seed + 403);
+  let kind: 'village' | 'farm';
+  if (u < VILL_P[fam]) kind = 'village';
+  else if (u < VILL_P[fam] + FARM_P[fam]) kind = 'farm';
+  else return null;
+  /* eau : dans la vallée, pas dans le lac, pas sur la crête */
+  const c = closedAt(cx, cy, seed);
+  if (c > 2 || c < -14) return null;
+  if (tempAt(cx, cy, seed) < VILL_COLD) return null;
+  if (Hroad(cx, cy, seed) > VILL_SNOW) return null;
+  /* praticabilité (le même test que le rendu n°33) */
+  let hMin = Infinity, hMax = -Infinity;
+  for (let a = -50; a <= 50; a += 25)
+    for (let b = -50; b <= 50; b += 25) {
+      const v = H(cx + a, cy + b, seed);
+      if (v < hMin) hMin = v;
+      if (v > hMax) hMax = v;
+    }
+  if ((hMax - hMin) / 100 > 0.12) return null;
+  return { x: cx, y: cy, kind, fam };
+}
+
+/* distance au BOURG (kind='village') le plus proche — 3×3 cellules
+   (±1 400 m : au-delà, la répulsion rocade est nulle par construction).
+   memo : cache par clé de cellule — la fonction est PURE, le memo
+   n'évite que de re-sonder les 25 H de praticabilité. */
+export function villageNear(x: number, y: number, seed: number,
+                            memo: Map<number, Vill | null>): number {
+  const ix = Math.floor(x / VILL_CELL), iy = Math.floor(y / VILL_CELL);
+  let dmin = Infinity;
+  for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) {
+    const key = (ix + di) * 67108864 + (iy + dj);
+    let v = memo.get(key);
+    if (v === undefined) { v = villageCell(ix + di, iy + dj, seed); memo.set(key, v); }
+    if (v && v.kind === 'village') {
+      const d = Math.hypot(v.x - x, v.y - y);
+      if (d < dmin) dmin = d;
+    }
+  }
+  return dmin;
+}
+
+/* forêt dense (macro comme micro — le même signal, deux échelles de
+   lecture : wFor n°50 dans les 13 caps, wForMac n°51 aux sondes des
+   jambes de waypoints) */
+export function forestAt(x: number, y: number, seed: number): number {
+  return ss(0.78, 0.92, moistAt(x, y, seed)) * ss(2, 8, tempAt(x, y, seed));
 }
 
 /* n°33 — plateforme routière CÔTIÈRE : la route ne plonge jamais
