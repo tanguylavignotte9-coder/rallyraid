@@ -436,14 +436,15 @@ function buildRoad(group, d) {
        deck + ravin VOUlus — la jupe reste plate à p.z + 0.02
        (arches dessous, terrain qui s'ouvre). */
     const halfDirt = w + 2;
-    const dirtY = p.seg === 1 ? p.z + 0.02 : terrainY(p, i, halfDirt);
-    pos.push(p.x + nx * -halfDirt, dirtY, p.y + nz * -halfDirt);
+    const dirtYL = p.seg === 1 ? p.z + 0.02 : terrainY(p, i, -halfDirt);   /* n°49 : dist signé — le bord G suivait le miroir droit */
+    const dirtYR = p.seg === 1 ? p.z + 0.02 : terrainY(p, i, halfDirt);
+    pos.push(p.x + nx * -halfDirt, dirtYL, p.y + nz * -halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
     pos.push(p.x + nx * -halfRoad, p.z + 0.05, p.y + nz * -halfRoad);
     col.push(roadCol.r, roadCol.g, roadCol.b);
     pos.push(p.x + nx * halfRoad, p.z + 0.05, p.y + nz * halfRoad);
     col.push(roadCol.r, roadCol.g, roadCol.b);
-    pos.push(p.x + nx * halfDirt, dirtY, p.y + nz * halfDirt);
+    pos.push(p.x + nx * halfDirt, dirtYR, p.y + nz * halfDirt);
     col.push(dirtCol.r, dirtCol.g, dirtCol.b);
   }
   /* 4 sommets par point → 3 quads → 6 triangles, en sens ANTIHORAIRE
@@ -533,7 +534,12 @@ function terrainY(p, i, dist) {
   const hT = H(x, z, seed);
   const wGap = segFade ? (segFade[i] ?? 0) : 0;
   const talus = Math.max(T_BLEND, Math.abs(p.z - H(p.x, p.y, seed)) * 2.5);
-  const wDist = Math.max(0, Math.min(1, (dist - (p.w + 2)) / talus));
+  /* n°49 : dist peut être SIGNÉ (côté -1 = gauche du cap) : la position
+     x/z suit le signe, le fondu latéral suit |dist|. Avant n°49, tout
+     appel côté gauche échantillonnait H au MIROIR droit (preuve : 11 410
+     sommets manteau miroir-seuls sur 26 000, 78,9 % côté G à >2 m du
+     terrain vrai, max 31,6 m). Le côté droit est inchangé au bit près. */
+  const wDist = Math.max(0, Math.min(1, (Math.abs(dist) - (p.w + 2)) / talus));
   return p.z - 0.05 + (hT - (p.z - 0.05)) * Math.min(1, wDist + wGap);
 }
 /* terrain à une position monde QUELCONQUE (maisons, clochers, lumières
@@ -618,7 +624,7 @@ function buildTerrain(group, d) {
            deux sommets au même point monde (épingles) obtiennent le
            même jitter → plus d'artefact d'auto-recouvrement. */
         const jc = Math.min(j, capRow[i] / STEP);   // n°40 : rampe de jitter évaluée AU plafond (couture identique à la grille)
-        const y = terrainY(p, i, dist) + posHash(Math.round(x / 8), Math.round(zz / 8)) * 0.8 * terrainRamp(jc);
+        const y = terrainY(p, i, side * dist) + posHash(Math.round(x / 8), Math.round(zz / 8)) * 0.8 * terrainRamp(jc);   /* n°49 : dist signé — le manteau G suit le VRAI terrain, plus le miroir droit */
         pos.push(x, y, zz);
         const c2 = groundCol(y, T, M, co);
         snowAndSea(c2, y);
@@ -677,6 +683,7 @@ function buildMidFar(group, d) {
   const seed = snap?.seed ?? 42;
   const pos = [], col = [], idx = [];
   const PAD = 2400, CELL = 100, TALUS = 700, BUCK = 500;
+  const BAND49 = 100;   /* n°49 : largeur du raccord grille -> rim du manteau */
   const PATCH = ['#9cc76a', '#b8bf5e', '#cbb06a', '#6da04f'].map((c) => new THREE.Color(c));
   const HEDGE = new THREE.Color('#3f5a35');
 
@@ -699,6 +706,51 @@ function buildMidFar(group, d) {
     if (!buckets.has(k)) buckets.set(k, []);
     buckets.get(k).push(i);
   }
+
+  /* n°49 : RACCORD AU RIM DU MANTEAU — le rim (dernière colonne du
+     manteau, dist = w+2+cap de SA rangée, côté signé n°49) porte
+     terrainY + jitter, mais la pose n°45/48 du couloir est le min du
+     voisinage 3x3 - 0,35 : sur les fortes pentes la grille s'affaisse
+     de 1 à 4 m sous le rim local précisément là où le manteau
+     s'arrête -> marche flottante (on voit SOUS la coquille) ou mur
+     avec z-fight le long du bord. Fix : la bande [edge+2, edge+2+BAND49]
+     de la grille REJOINT le rim interpolé le long du bord réel du
+     manteau (polyligne des sommets rim des rangées voisines, formule
+     SANS jitter — le jitter du manteau est >= 0, la marge -0,15 garde
+     la grille strictement sous le rim rendu), puis fond vers sa valeur
+     talus. Le mur couloir->bande est caché derrière le bord du rim. */
+  const rimH = new Float64Array(pts.length * 2);   /* hauteur du rim par (rangée, côté), sans jitter */
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i];
+    const capI = mantleCaps ? mantleCaps[i] : 400;
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      rimH[i * 2 + (sgn > 0 ? 1 : 0)] = terrainY(p, i, sgn * (p.w + 2 + capI));
+    }
+  }
+  const rimXY = (i, sgn) => {
+    const p = pts[i];
+    const capI = mantleCaps ? mantleCaps[i] : 400;
+    const nx2 = -Math.sin(p.hd), nz2 = Math.cos(p.hd);
+    const dist = p.w + 2 + capI;
+    return [p.x + nx2 * sgn * dist, p.y + nz2 * sgn * dist];
+  };
+  const seamRim = (x, z, bi, sgn) => {   /* rim interpolé : projection sur les segments [bi-1,bi]/[bi,bi+1] */
+    const seg = (i0, i1) => {
+      const A = rimXY(i0, sgn), B = rimXY(i1, sgn);
+      const abx = B[0] - A[0], abz = B[1] - A[1];
+      const dd = abx * abx + abz * abz;
+      const f = dd < 1e-9 ? 0 : Math.max(0, Math.min(1, ((x - A[0]) * abx + (z - A[1]) * abz) / dd));
+      const px = A[0] + abx * f, pz = A[1] + abz * f;
+      return { d2: (x - px) * (x - px) + (z - pz) * (z - pz), y: rimH[i0 * 2 + (sgn > 0 ? 1 : 0)] * (1 - f) + rimH[i1 * 2 + (sgn > 0 ? 1 : 0)] * f };
+    };
+    let best = null;
+    for (const [i0, i1] of [[bi - 1, bi], [bi, bi + 1]]) {
+      if (i0 < 0 || i1 >= pts.length) continue;
+      const e = seg(i0, i1);
+      if (!best || e.d2 < best.d2) best = e;
+    }
+    return best ? best.y : null;
+  };
 
   /* n°47 : GARDE-ROUTE PAR SUBDIVISION — un quad 100 m peut traverser
      la bande bitume (|lat| < w) d'un rang qui n'est PAS son rang proche
@@ -815,6 +867,7 @@ function buildMidFar(group, d) {
     const edge = p.w + 2 + (mantleCaps ? mantleCaps[bi] : 400);
     const L = Math.abs(lat);
     if (pastEnd || L >= edge + 2) return null;   /* hors couloir : le sous-sommet reste bilinéaire */
+    const sd = lat < 0 ? -1 : 1;   /* n°49 : dist signés */
     const dLow = Math.min(L, edge);
     const jj = Math.max(0, Math.min(25, Math.floor((dLow - (p.w + 2)) / STEP)));
     let yMin = Infinity;
@@ -823,9 +876,34 @@ function buildMidFar(group, d) {
       const capR = mantleCaps ? mantleCaps[ri] : 400;
       const dd0 = q.w + 2 + Math.min(jj * STEP, capR);
       const dd1 = q.w + 2 + Math.min((jj + 1) * STEP, capR);
-      yMin = Math.min(yMin, terrainY(q, ri, dd0), terrainY(q, ri, dd1));
+      yMin = Math.min(yMin, terrainY(q, ri, sd * dd0), terrainY(q, ri, sd * dd1));
     }
     return yMin - 0.35;
+  };
+  const poseRing49 = (x, z, vy) => {   /* n°49 : couloir n°48 (min(bilinéaire, poseRing)) SINON bande de raccord au rim */
+    let bi = -1, bd = Infinity;
+    const cand = nearRows(x, z);
+    for (let q = 0; q < cand.length; q++) {
+      const p = pts[cand[q]];
+      const dd = (x - p.x) * (x - p.x) + (z - p.y) * (z - p.y);
+      if (dd < bd) { bd = dd; bi = cand[q]; }
+    }
+    if (bi < 0) return null;
+    const p = pts[bi];
+    const nvx = -Math.sin(p.hd), nvz = Math.cos(p.hd);
+    const lat = (x - p.x) * nvx + (z - p.y) * nvz;
+    const u = (x - p.x) * Math.cos(p.hd) + (z - p.y) * Math.sin(p.hd);
+    const pastEnd = (bi === 0 && u < -8) || (bi === pts.length - 1 && u > 8);
+    const edge = p.w + 2 + (mantleCaps ? mantleCaps[bi] : 400);
+    const L = Math.abs(lat);
+    if (pastEnd) return null;
+    if (L < edge + 2) {   /* couloir : pose n°45/48 inchangée (min(bilinéaire, poseRing)) */
+      const pr = poseRing(x, z);
+      return pr === null ? null : Math.min(vy, pr);
+    }
+    if (L >= edge + 2 + BAND49) return null;   /* hors bande : le sous-sommet reste bilinéaire */
+    const t = (L - (edge + 2)) / BAND49;
+    return (seamRim(x, z, bi, lat < 0 ? -1 : 1) - 0.15) * (1 - t) + vy * t;
   };
   const subEmit = (a, b, c2, d2, omitPierce, jz, jx) => {
     const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
@@ -877,8 +955,8 @@ function buildMidFar(group, d) {
           else pose = subNb(jz + 1, jx);
         }
         if (pose) {
-          const pr = poseRing(vx, vz);
-          if (pr !== null && pr < vy) vy = pr;
+          const pr = poseRing49(vx, vz, vy);   /* n°49 : couloir OU bande de raccord au rim */
+          if (pr !== null) vy = pr;
         }
         pos.push(vx, vy, vz);
         for (let k3 = 0; k3 < 3; k3++)
@@ -920,7 +998,7 @@ function buildMidFar(group, d) {
     return e;
   };
 
-  /* état par sommet (n°48) : 0 = loin ; ±1 couloir côté ± ; ±3 talus côté ± ; ±2 collé côté ± (mort depuis n°45) */
+  /* état par sommet (n°48) : 0 = loin ; ±1 couloir côté ± ; ±9 bande raccord n°49 côté ± ; ±3 talus côté ± ; ±2 collé côté ± (mort depuis n°45) */
   const sideOf = new Int8Array(nx * nz);
   const disp = new Float32Array(nx * nz);   /* n°40 : déplacement du collage (0 = libre) */
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
@@ -990,7 +1068,7 @@ function buildMidFar(group, d) {
             const capR = mantleCaps ? mantleCaps[ri] : 400;
             const dd0 = q.w + 2 + Math.min(jj * STEP, capR);
             const dd1 = q.w + 2 + Math.min((jj + 1) * STEP, capR);
-            yMin = Math.min(yMin, terrainY(q, ri, dd0), terrainY(q, ri, dd1));
+            yMin = Math.min(yMin, terrainY(q, ri, sd * dd0), terrainY(q, ri, sd * dd1));   /* n°49 : dist signés */
           }
           y = yMin - 0.35;
           side = sd;
@@ -998,8 +1076,18 @@ function buildMidFar(group, d) {
           /* talus : terrainY (celui du manteau) fond vers le H vrai */
           const sd = lat < 0 ? -1 : 1;
           const t = (L - edge) / TALUS;
-          y = terrainY(p, bi, L) * (1 - t) + (H(x, z, seed) - 0.4) * t - 0.1 * (1 - t);
-          side = sd * 3;   /* n°48 : talus codé ±3 — seul le couloir (±1) déclenche la subdivision */
+          y = terrainY(p, bi, sd * L) * (1 - t) + (H(x, z, seed) - 0.4) * t - 0.1 * (1 - t);   /* n°49 : dist signé */
+          if (L < edge + 2 + BAND49) {
+            /* n°49 : RACCORD AU RIM — le sommet de la bande rejoint le
+               rim interpolé (-0,15) puis fond vers sa valeur talus. */
+            const t2 = (L - (edge + 2)) / BAND49;
+            y = (seamRim(x, z, bi, sd) - 0.15) * (1 - t2) + y * t2;
+            side = sd * 9;
+          } else if (L < edge + 2 + BAND49 + CELL) {
+            side = sd * 9;   /* voisin de bande : subdivisé pour la transition des faces, sans pose propre */
+          } else {
+            side = sd * 3;   /* n°48 : talus codé ±3 — seul le couloir (±1) et la bande (±9) déclenchent la subdivision */
+          }
         }
       }
       sideOf[vi] = side;
@@ -1030,8 +1118,8 @@ function buildMidFar(group, d) {
     if (jz < 0 || jz + 1 >= nz || jx < 0 || jx + 1 >= nx) return false;
     const a = jz * nx + jx, b = a + 1, c2 = a + nx, d2 = c2 + 1;
     const s = sideOf;
-    return s[a] === 1 || s[a] === -1 || s[b] === 1 || s[b] === -1 ||
-           s[c2] === 1 || s[c2] === -1 || s[d2] === 1 || s[d2] === -1;
+    const inR = (v) => v === 1 || v === -1 || v === 9 || v === -9;   /* n°49 : bande de raccord (±9) subdivisée aussi */
+    return inR(s[a]) || inR(s[b]) || inR(s[c2]) || inR(s[d2]);
   };
   for (let jz = 0; jz + 1 < nz; jz++) for (let jx = 0; jx + 1 < nx; jx++) {
     const k = jz * (nx - 1) + jx;
@@ -1583,7 +1671,7 @@ function buildProps(group, d) {
     const dist = p.w + 4 + r3 * 90;
     const x = p.x + nx * side * dist;
     const zz = p.y + nz * side * dist;
-    const y = terrainY(p, i, dist) + posHash(rw, 43) * 2;
+    const y = terrainY(p, i, side * dist) + posHash(rw, 43) * 2;   /* n°49 : dist signé — les arbres/roches G se posaient sur le miroir droit */
     /* n°33 — CASCADE CLIMATIQUE : la végétation dérive des axes au
        point de pose (plus d'étiquette par abscisse) — roches en
        nival, pins taïga sous −6 °C, pins+roches de montagne, palmiers
