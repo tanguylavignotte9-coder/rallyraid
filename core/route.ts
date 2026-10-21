@@ -53,7 +53,7 @@
    espacements tirés du PRNG du chunk. */
 
 import { mulberry32, SEG, type Track } from './engine.ts';
-import { H, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss } from './terrain.ts';
+import { H, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss, obstCost } from './terrain.ts';
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -228,6 +228,21 @@ const ER = {
   grace: 50,         // fenêtre de grâce anti-croisement (samples = 400 m d'arc)
   lookWater: 2000,   // lookahead de la garde sur l'eau (m)
   lookLand: 1600,    // lookahead de la garde à terre (m)
+  /* n°50 — MONDE CRÉDIBLE P1 : obstacles naturels dans le coût.
+     obstEvery : les signaux (lac/marais/forêt dense) sont échantillonnés
+     tous les obstEvery sous-pas du lookahead 192 m (12 → 96 m : le signal
+     est lisse à l'échelle de 100 m+ ; l'échantillonner à chaque sous-pas
+     coûte ×6 sans gain, mesuré). Poids (calibration banc bench-n50,
+     3 graines × 1000 km) : le lac est cher comme un ouvrage (wLake 12 →
+     traversées 73/68/55 → 15/14/14 ; 8 laissait 22/17/17 ET cassait la
+     4e ref POI), le marais paie ses fondations, la forêt dense son
+     défrichement (les MASSIFS climatiques restent du ressort du futur
+     P2 macro — le poids 1.5 ne vise que les boqueteaux). Signaux purs
+     de (graine, x, y) — zéro PRNG, ADR 0004. */
+  obstEvery: 12,
+  wLake: 12,
+  wMarsh: 3,
+  wFor: 1.5,
 };
 
 /* ---- mémoire anti-croisement : buckets de 250 m des segments commis.
@@ -479,6 +494,14 @@ export function buildChunk(rt: Route, k: number): Chunk {
         hug += Math.min(r.cost, ER.hugCap);
         if (r.slope > steep) steep = r.slope;
       }
+      /* n°50 — obstacles naturels : le cap candidat GOÛTE le monde le
+         long de son lookahead. Le cap est CONSTANT sur le lookahead →
+         la position au sous-pas j = x + cap·j·8 m, EXACTE. */
+      let obst = 0;
+      for (let j = ER.obstEvery; j <= ER.lookC; j += ER.obstEvery) {
+        obst += obstCost(x + Math.cos(hd2) * j * SEG, y + Math.sin(hd2) * j * SEG,
+                         rt.seed, ER.wLake, ER.wMarsh, ER.wFor);
+      }
       const pur = wpWrap(hd2 - hdMac);
       const steepPen = Math.max(0, steep - ER.gentleS) ** 2 * ER.wSteep;
       /* garde anti-croisement, deux niveaux :
@@ -499,7 +522,7 @@ export function buildChunk(rt: Route, k: number): Chunk {
       if (dOld1 < ER.avoidR) avoidPen += ER.wAvoid * (1 - dOld1 / ER.avoidR);
       const cost = ER.wHug * hug / ER.lookC + ER.wPur * pur * pur
                  + ER.wSm * (d - steerPrev) ** 2 + ER.wZero * Math.abs(d)
-                 + steepPen + leashPen * pur * pur + avoidPen;
+                 + steepPen + leashPen * pur * pur + avoidPen + obst;
       if (!best || cost < best.cost) best = { cost, d };
     }
     /* évasion en 2 passes : si TOUS les candidats coupent (best ≥ 1e7),

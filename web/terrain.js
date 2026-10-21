@@ -180,6 +180,57 @@ export function flowAccum(grid, w, h) {
   return acc;
 }
 
+/* ============================================================
+   n°50 — MONDE CRÉDIBLE P1 : signaux d'obstacles NATURELS.
+   Le contrôleur de route n°43 ne lit que le relief — terrain plat =
+   droite. Ces signaux donnent au coût des 13 caps des RAISONS
+   D'ESQUIVER issues des champs existants (design arbitré 2026-10-21,
+   banc bench-n50) :
+   - HO4 = relief GÉOGRAPHIQUE (O1..O4, SANS les octaves fines) : les
+     creux O4 (λ520) sont les vrais lacs du rendu (scan fin n°26,
+     creux p50 ~5 m). SANS les octaves fines : une bosse λ160 (±4 m)
+     ne doit pas fermer un faux lac, et le grain de la voiture ne
+     doit pas polluer le centre ;
+   - closedAt = profondeur du BASSIN FERMÉ : min des 4 sondes N/E/S/W
+     à LAKE_R, moins HO4 du point. > 0 : cuvette sans exutoire (une
+     vallée ouverte a toujours une sonde aval plus basse → ≤ 0) ;
+   - obstCost combine aux poids du contrôleur : lac (fermeture ≥ 4 m),
+     marais (fermeture ≥ 1 m + humidité — cohérent avec les cellules
+     hydro du rendu : acc ≥ 60, humidité ≥ 0,30), forêt dense
+     (humidité très haute + tempéré ; la taïga reste franchissable).
+   Sigmoïdes ss : champs CONTINUS — la route voit l'obstacle VENIR
+   de loin, pas un mur binaire. obstCost PARTAGE closedAt/moistAt
+   entre les signaux (~1 H + 5 HO4 + 1 tempAt par évaluation).
+   PUREMENT de (graine, x, y) — zéro PRNG (ADR 0004). Jumeau
+   core/terrain.ts IDENTIQUE au bit près (terrain-web.test). */
+export const LAKE_R = 600;          // m : rayon de sonde de fermeture
+export const LAKE_D = 4;             // m : fermeture ≥ 4 m → lac
+export const MARSH_D = 1;           // m : fermeture ≥ 1 m → marais (si humide)
+
+export function HO4(x, y, seed) {
+  return oct(WP.lam1, WP.amp1, 101, x, y, seed) + oct(WP.lam2, WP.amp2, 202, x, y, seed)
+       + oct(WP.lam3, WP.amp3, 303, x, y, seed) + oct(WP.lam4, WP.amp4, 404, x, y, seed);
+}
+
+export function closedAt(x, y, seed) {
+  const h0 = HO4(x, y, seed);
+  let mn = Infinity;
+  mn = Math.min(mn, HO4(x + LAKE_R, y, seed) - h0);
+  mn = Math.min(mn, HO4(x - LAKE_R, y, seed) - h0);
+  mn = Math.min(mn, HO4(x, y + LAKE_R, seed) - h0);
+  mn = Math.min(mn, HO4(x, y - LAKE_R, seed) - h0);
+  return mn;
+}
+
+export function obstCost(x, y, seed, wLake, wMarsh, wFor) {
+  const c = closedAt(x, y, seed);
+  const lake = ss(LAKE_D, LAKE_D + 6, c);
+  const m = moistAt(x, y, seed);
+  const marsh = ss(MARSH_D, MARSH_D + 3, c) * ss(0.62, 0.78, m);
+  const forest = ss(0.78, 0.92, m) * ss(2, 8, tempAt(x, y, seed));
+  return wLake * lake + wMarsh * marsh + wFor * forest;
+}
+
 export const CAUSEWAY_H = 12;
 
 export function HroadC(x, y, seed) {

@@ -363,9 +363,11 @@ test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)'
      premiers 25000/54560/79456:station). C'est une NOUVELLE version de
      route : re-set des courses en cours (arbitrage assumé). */
   const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
-  assert.equal(pa.length, 19, 'POI n°43 (graine 12345, 600 km)');
+  /* n°50 : la route esquive → la famille aux points bouge → le curseur
+     POI aussi (mesuré : 18 POI, les 3 PREMIERS inchangés). */
+  assert.equal(pa.length, 18, 'POI n°50 (graine 12345, 600 km)');
   assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
-    ['25000:station', '54560:station', '79456:station'], 'positions POI n°43');
+    ['25000:station', '54560:station', '79456:station'], 'positions POI (3 premiers inchangés)');
 });
 
 test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {

@@ -8,11 +8,13 @@ import {
   H as Hc, Hroad as Hrc, Hmacro as Hmc, HroadC as Hrcc,
   coastAt as cac, tempAt as tac, moistAt as mac, famAt as fac,
   ss as ssc, SEA_SL, windAt as wac, flowAccum as facc,
+  HO4 as HO4c, closedAt as clc, obstCost as occ,
 } from '../core/terrain.ts';
 import {
   H as Hw, Hroad as Hrw, Hmacro as Hmw, HroadC as Hrcw,
   coastAt as caw, tempAt as taw, moistAt as maw, famAt as faw,
   ss as ssw, SEA_SL as SLw, windAt as waw, flowAccum as facw,
+  HO4 as HO4w, closedAt as clw, obstCost as ocw,
 } from '../web/terrain.js';
 
 test('26/33 : champs navigateur identiques au cœur (bit à bit)', () => {
@@ -52,6 +54,23 @@ test('26/33 : champs navigateur identiques au cœur (bit à bit)', () => {
   for (let i = 0; i < 2000; i++)
     check((rnd() - 0.5) * 60000, (rnd() - 0.5) * 60000, Math.floor(rnd() * 1e9));
   assert.ok(n > 5000, `${n} points vérifiés`);
+});
+
+test('50 : signaux d\'obstacles navigateur identiques au cœur (bit à bit)', () => {
+  /* n°50 — HO4 / closedAt / obstCost (poids fixes 12/3/1.5, ceux du
+     contrôleur ER) doivent être identiques entre core et web. */
+  let n = 0;
+  for (let i = 0; i < 1200; i++) {
+    const x = (i * 173) % 40000 - 20000 + (i % 7) * 53;
+    const y = (i * 311) % 40000 - 20000 + (i % 11) * 97;
+    const seed = [42, 12345, 777][i % 3]!;
+    assert.equal(HO4w(x, y, seed), HO4c(x, y, seed), `HO4(${x}, ${y}, ${seed})`);
+    assert.equal(clw(x, y, seed), clc(x, y, seed), `closedAt(${x}, ${y}, ${seed})`);
+    assert.equal(ocw(x, y, seed, 12, 3, 1.5), occ(x, y, seed, 12, 3, 1.5),
+      `obstCost(${x}, ${y}, ${seed})`);
+    n++;
+  }
+  assert.ok(n >= 1000, `${n} points vérifiés`);
 });
 
 test('33 : flowAccum navigateur identique au cœur (bit à bit)', () => {
