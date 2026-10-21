@@ -386,7 +386,11 @@ async function refreshWorld() {
     buildRoad(group, d);
     buildTerrain(group, d);
     buildMidFar(group, d);
-    buildRidges(group, d);
+    /* n°48 : rides L2 supprimées — elles doublonnaient le vrai relief
+       rendu depuis n°26/39 (silhouettes dent de scie qui recoupent les
+       montagnes réelles, glitchs verticaux de l'arrière-plan). La
+       fonction reste en code mort, decoRidges reste vide (dégradation
+       fps → boucle sans effet). */
     buildVillages(group, d);
     buildWater(group, d);
     buildProps(group, d);
@@ -767,7 +771,63 @@ function buildMidFar(group, d) {
     }
     return false;
   };
-  const subEmit = (a, b, c2, d2) => {
+  /* n°48 : COUTURE COULOIR PAR SUBDIVISION POSÉE — le décollage n°45
+     garantit la pose (min des échantillons manteau − 0,35) aux SOMMETS
+     de la grille (100 m), mais les FACES bilinéaires percent le manteau
+     entre les sommets (mesuré au banc : ~10 % de l'aire du couloir
+     recouverte à +3,9-4,1 m, dans CHAQUE bande latérale 0-190 m, les
+     deux côtés — la « couture » visible de part et d'autre de la
+     route). Fix : subdiviser les quads du couloir (coin à ±1, ±3 =
+     talus n'est pas subdivisé) + leurs voisins 4-connexes (edge varie
+     entre rangées) en 4×4 (25 m) et POSER les sous-sommets avec la
+     MÊME formule que la passe vertex → le mismatch faces/manteau est
+     divisé par ~16. La pose est un abaissement uniquement
+     (min(bilinéaire, poseRing)) : elle ne peut créer aucune nouvelle
+     percée, et la bande omise par la garde n°47 reste couverte par
+     construction (deck |lat| ≤ w+2 + manteau). */
+  let cbx48 = 1e9, cbz48 = 1e9; const cand48 = [];
+  const nearRows = (x, z) => {   /* union des 9 buckets autour — pure en (x,z), cachée par bucket */
+    const bx = Math.floor(x / BUCK), bz = Math.floor(z / BUCK);
+    if (bx !== cbx48 || bz !== cbz48) {
+      cand48.length = 0;
+      for (let dbx = -1; dbx <= 1; dbx++) for (let dbz = -1; dbz <= 1; dbz++) {
+        const arr = buckets.get(bkey(bx + dbx, bz + dbz));
+        if (arr) for (const r of arr) cand48.push(r);
+      }
+      cbx48 = bx; cbz48 = bz;
+    }
+    return cand48;
+  };
+  const poseRing = (x, z) => {   /* réplique EXACTE de la pose n°45 de la passe vertex */
+    let bi = -1, bd = Infinity;
+    const cand = nearRows(x, z);
+    for (let q = 0; q < cand.length; q++) {
+      const p = pts[cand[q]];
+      const dd = (x - p.x) * (x - p.x) + (z - p.y) * (z - p.y);
+      if (dd < bd) { bd = dd; bi = cand[q]; }
+    }
+    if (bi < 0) return null;
+    const p = pts[bi];
+    const nvx = -Math.sin(p.hd), nvz = Math.cos(p.hd);
+    const lat = (x - p.x) * nvx + (z - p.y) * nvz;
+    const u = (x - p.x) * Math.cos(p.hd) + (z - p.y) * Math.sin(p.hd);
+    const pastEnd = (bi === 0 && u < -8) || (bi === pts.length - 1 && u > 8);
+    const edge = p.w + 2 + (mantleCaps ? mantleCaps[bi] : 400);
+    const L = Math.abs(lat);
+    if (pastEnd || L >= edge + 2) return null;   /* hors couloir : le sous-sommet reste bilinéaire */
+    const dLow = Math.min(L, edge);
+    const jj = Math.max(0, Math.min(25, Math.floor((dLow - (p.w + 2)) / STEP)));
+    let yMin = Infinity;
+    for (let ri = Math.max(0, bi - 1); ri <= Math.min(pts.length - 1, bi + 1); ri++) {
+      const q = pts[ri];
+      const capR = mantleCaps ? mantleCaps[ri] : 400;
+      const dd0 = q.w + 2 + Math.min(jj * STEP, capR);
+      const dd1 = q.w + 2 + Math.min((jj + 1) * STEP, capR);
+      yMin = Math.min(yMin, terrainY(q, ri, dd0), terrainY(q, ri, dd1));
+    }
+    return yMin - 0.35;
+  };
+  const subEmit = (a, b, c2, d2, omitPierce, jz, jx) => {
     const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
     const bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];
     const cx = pos[c2 * 3], cy = pos[c2 * 3 + 1], cz = pos[c2 * 3 + 2];
@@ -776,12 +836,25 @@ function buildMidFar(group, d) {
     const bc = [col[b * 3], col[b * 3 + 1], col[b * 3 + 2]];
     const cc = [col[c2 * 3], col[c2 * 3 + 1], col[c2 * 3 + 2]];
     const dc = [col[d2 * 3], col[d2 * 3 + 1], col[d2 * 3 + 2]];
-    const rows = stripRowsFor(Math.min(ax, bx, cx, dx) - 40, Math.min(az, bz, cz, dz) - 40,
-                              Math.max(ax, bx, cx, dx) + 40, Math.max(az, bz, cz, dz) + 40);
+    const rows = omitPierce ? stripRowsFor(Math.min(ax, bx, cx, dx) - 40, Math.min(az, bz, cz, dz) - 40,
+                              Math.max(ax, bx, cx, dx) + 40, Math.max(az, bz, cz, dz) + 40) : null;
     const N = 4;   /* 4×4 sous-cellules (25 m) */
     const bxv = bx - ax, byv = by - ay, bzv = bz - az;
     const cxv = cx - ax, cyv = cy - ay, czv = cz - az;
     const dxv = dx - bx - cx + ax, dyv = dy - by - cy + ay, dzv = dz - bz - cz + az;
+    /* n°48 : un sous-sommet d'ARRÊTE n'est posé que si le quad voisin
+       est AUSSI subdivisé (percée n°47 ou couloir n°48) — règle
+       SYMÉTRIQUE : les deux parents consultent le même tableau
+       précalculé et posent le sous-sommet partagé à la même valeur
+       (poseRing est pure), sinon fissure le long de l'arrête.
+       Arrête non posée → valeur bilinéaire = surface du voisin non
+       subdivisé (une arrête de patch bilinéaire ne dépend que de ses
+       deux coins partagés) → pas de fissure non plus. */
+    const subNb = (dz2, dx2) => {
+      if (dz2 < 0 || dz2 >= nz - 1 || dx2 < 0 || dx2 >= nx - 1) return false;
+      const k = dz2 * (nx - 1) + dx2;
+      return pierceQ48[k] === 1 || ringQ48[k] === 1;
+    };
     const map = [];
     for (let i = 0; i <= N; i++) {
       map[i] = [];
@@ -792,8 +865,21 @@ function buildMidFar(group, d) {
         if (i === N && j === N) { map[i][j] = d2; continue; }
         const te = i / N, tf = j / N;
         const vx = ax + bxv * te + cxv * tf + dxv * te * tf;
-        const vy = ay + byv * te + cyv * tf + dyv * te * tf;
+        let vy = ay + byv * te + cyv * tf + dyv * te * tf;
         const vz = az + bzv * te + czv * tf + dzv * te * tf;
+        /* n°48 : pose couloir (min(bilinéaire, poseRing)) — intérieur :
+           toujours ; arrête : seulement si le voisin est subdivisé. */
+        let pose = i > 0 && i < N && j > 0 && j < N;
+        if (!pose) {
+          if (i === 0) pose = subNb(jz, jx - 1);
+          else if (i === N) pose = subNb(jz, jx + 1);
+          else if (j === 0) pose = subNb(jz - 1, jx);
+          else pose = subNb(jz + 1, jx);
+        }
+        if (pose) {
+          const pr = poseRing(vx, vz);
+          if (pr !== null && pr < vy) vy = pr;
+        }
         pos.push(vx, vy, vz);
         for (let k3 = 0; k3 < 3; k3++)
           col.push(ac[k3] + (bc[k3] - ac[k3]) * te + (cc[k3] - ac[k3]) * tf + (dc[k3] - bc[k3] - cc[k3] + ac[k3]) * te * tf);
@@ -808,8 +894,10 @@ function buildMidFar(group, d) {
         const g0 = pos[q10 * 3], g1 = pos[q10 * 3 + 1], g2 = pos[q10 * 3 + 2];
         const h0 = pos[q11 * 3], h1 = pos[q11 * 3 + 1], h2 = pos[q11 * 3 + 2];
         let omit = false;
-        for (const p2 of rows) {
-          if (triAbove(p2, [e0, e1, e2, f0, f1, f2, g0, g1, g2, g0, g1, g2, f0, f1, f2, h0, h1, h2])) { omit = true; break; }
+        if (rows) {
+          for (const p2 of rows) {
+            if (triAbove(p2, [e0, e1, e2, f0, f1, f2, g0, g1, g2, g0, g1, g2, f0, f1, f2, h0, h1, h2])) { omit = true; break; }
+          }
         }
         if (omit) { nHoles47++; continue; }
         idx.push(q00, q01, q10, q10, q01, q11);
@@ -832,7 +920,7 @@ function buildMidFar(group, d) {
     return e;
   };
 
-  /* état par sommet : 0 = libre sans côté (loin) ; ±1 libre côté ± ; ±2 collé côté ± */
+  /* état par sommet (n°48) : 0 = loin ; ±1 couloir côté ± ; ±3 talus côté ± ; ±2 collé côté ± (mort depuis n°45) */
   const sideOf = new Int8Array(nx * nz);
   const disp = new Float32Array(nx * nz);   /* n°40 : déplacement du collage (0 = libre) */
   const push = (x, y, z, c) => { pos.push(x, y, z); col.push(c.r, c.g, c.b); };
@@ -911,7 +999,7 @@ function buildMidFar(group, d) {
           const sd = lat < 0 ? -1 : 1;
           const t = (L - edge) / TALUS;
           y = terrainY(p, bi, L) * (1 - t) + (H(x, z, seed) - 0.4) * t - 0.1 * (1 - t);
-          side = sd;
+          side = sd * 3;   /* n°48 : talus codé ±3 — seul le couloir (±1) déclenche la subdivision */
         }
       }
       sideOf[vi] = side;
@@ -931,6 +1019,27 @@ function buildMidFar(group, d) {
     }
   }
 
+  /* n°48 : précalcul par quad — percée n°47 (même appel quadPierces
+     qu'avant, stocké au lieu d'inline : zéro coût ajouté) et couloir
+     n°48 (coin ±1 ; dilatation d'un rang : un voisin 4-connexe a un
+     coin ±1, car edge varie entre rangées et une face n'entre dans
+     l'anneau du manteau qu'avec un coin proche). */
+  const pierceQ48 = new Uint8Array((nx - 1) * (nz - 1));
+  const ringQ48 = new Uint8Array((nx - 1) * (nz - 1));
+  const ringQuad48 = (jz, jx) => {
+    if (jz < 0 || jz + 1 >= nz || jx < 0 || jx + 1 >= nx) return false;
+    const a = jz * nx + jx, b = a + 1, c2 = a + nx, d2 = c2 + 1;
+    const s = sideOf;
+    return s[a] === 1 || s[a] === -1 || s[b] === 1 || s[b] === -1 ||
+           s[c2] === 1 || s[c2] === -1 || s[d2] === 1 || s[d2] === -1;
+  };
+  for (let jz = 0; jz + 1 < nz; jz++) for (let jx = 0; jx + 1 < nx; jx++) {
+    const k = jz * (nx - 1) + jx;
+    const a0 = jz * nx + jx, b0 = a0 + 1, c0 = a0 + nx, d0 = c0 + 1;
+    pierceQ48[k] = quadPierces(a0, b0, c0, d0) ? 1 : 0;
+    ringQ48[k] = (ringQuad48(jz, jx) || ringQuad48(jz, jx - 1) || ringQuad48(jz, jx + 1) ||
+                  ringQuad48(jz - 1, jx) || ringQuad48(jz + 1, jx)) ? 1 : 0;
+  }
   /* index : quads monde ; saut de ceux que le manteau couvre */
   let nQuads = 0, nSkip = 0;
   for (let jz = 0; jz + 1 < nz; jz++) {
@@ -950,7 +1059,9 @@ function buildMidFar(group, d) {
          position grille est un collage sur un AUTRE bras d'épingle (même
          signe → non couvert par la règle des 2 côtés) : quad sauté, la
          zone reste couverte par le manteau. Collage légitime ≤ ~145 m. */
-      if (quadPierces(a, b, c2, d2)) { subEmit(a, b, c2, d2); nSkip++; continue; }
+      const kq = jz * (nx - 1) + jx;
+      if (pierceQ48[kq]) { subEmit(a, b, c2, d2, true, jz, jx); nSkip++; continue; }
+      if (ringQ48[kq]) { subEmit(a, b, c2, d2, false, jz, jx); nSkip++; continue; }
       idx.push(a, c2, b, b, c2, d2);
       nQuads++;
     }
