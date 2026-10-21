@@ -646,10 +646,9 @@ function buildTerrain(group, d) {
    grille monde ne peut pas se replier sur elle-même, et le bord du
    monde arrière/avant reste au-delà du brouillard.
 
-   - corridor |lat| < w+2+400+2 : sommet COLLÉ au bord exact du
-     manteau (position = anneau externe du L0 recopié à l'identique,
-     y = terrainY - 0,1 : couture à 10 cm, TOUJOURS sous le manteau
-     → jamais de z-fight dans les bandelettes convexes) ;
+   - corridor |lat| < w+2+400+2 : sommet DÉCOLLÉ (n°45) : position
+     grille conservée, posé SOUS le manteau (min des échantillons de
+     coins − 0,35) → jamais de z-fight, jamais de plaque étirée ;
    - edge..edge+700 : fondu terrainY → H(x,z) (le talus des déblais
      se referme sur le terrain naturel), enfoncé de 0,1 → 0,4 m ;
    - au-delà : y = H(x,z) - 0,4 (sol universel : villages, eau,
@@ -741,25 +740,41 @@ function buildMidFar(group, d) {
         if (pastEnd || L >= edge + TALUS) {
           y = H(x, z, seed) - 0.4;
         } else if (L < edge + 2) {
-          /* COLLÉ au bord exact du manteau : anneau externe du L0 */
+          /* n°45 : DÉCOLLAGE GÉNÉRAL — plus AUCUN collage. Le sommet
+             reste à sa position grille et se pose sous la surface du
+             manteau, à min(échantillons de coins du quad manteau
+             couvrant : 3 rangées × 2 colonnes, dist plafonnée au cap
+             de chaque rangée) − 0,35 m. Les coins réels du manteau
+             portent la même formule + jitter ≥ 0 → le sommet est
+             PROUVÉ sous toute surface bilinéaire du manteau, même
+             dans les falaises aliasées sous 16 m (H vrai ≠ H
+             échantillonné : le décollage « à la position réelle »
+             perce le manteau de 5-14 m, mesuré). Le n°43 avait rapproché
+             la couture (cap ≥ 160 → limite à ~166 m au lieu de 406) :
+             les cordes de collage quasi-coplanaires (|Δy| p50 0,35 m,
+             4,5-5,8 km par fenêtre de 8 km) scintillaient en z-fight
+             sur TOUT le parcours ; les pulls (moy 82 m, max 169 m)
+             étiraient des quads en biais et laissaient des encoches.
+             Ici : 0 shimmer, 0 perçage, 0 trou (banc n°45, 3 graines),
+             build inchangé (~83 ms). Le manteau n°44 couvre ±166 m >
+             141 m (pire diagonale de quad traversant la route) → la
+             règle des 2 côtés (hp && hn) reste légitime partout ; les
+             conditions gc===4 / disp>170 de la passe d’index ne se
+             déclenchent plus (plus de sommets collés) mais restent
+             inoffensives. */
           const sd = lat < 0 ? -1 : 1;
-          const gx2 = p.x + nvx * sd * edge, gz2 = p.y + nvz * sd * edge;
-          const d2 = Math.hypot(gx2 - x, gz2 - z);
-          if (d2 > 170) {
-            /* n°40 : collage sur un AUTRE bras d'épingle → DÉCOLÉ. Le
-               sommet reste à sa position grille, posé sur la surface du
-               manteau prolongée (terrainY au L réel) − 0,1 m : pas de
-               plaque étirée, pas de trou (le quad reste de taille fan
-               normale), et le couloir éventuel reste sous le manteau. */
-            const jL = Math.max(0, Math.min(25, (L - p.w - 2) / STEP));
-            y = terrainY(p, bi, Math.min(L, edge)) + posHash(Math.round(x / 8), Math.round(z / 8)) * 0.8 * terrainRamp(jL) - 0.1;
-            side = sd;
-          } else {
-            px = gx2; pz = gz2;
-            y = terrainY(p, bi, edge) + posHash(Math.round(px / 8), Math.round(pz / 8)) * 0.8 * terrainRamp((edge - p.w - 2) / STEP) - 0.1;   // n°40 : jitter du manteau RÉPLIQUÉ exactement → couture invisible même au plafond
-            side = sd * 2;
-            disp[vi] = d2;
+          const dLow = Math.min(L, edge);
+          const jj = Math.max(0, Math.min(25, Math.floor((dLow - (p.w + 2)) / STEP)));
+          let yMin = Infinity;
+          for (let ri = Math.max(0, bi - 1); ri <= Math.min(pts.length - 1, bi + 1); ri++) {
+            const q = pts[ri];
+            const capR = mantleCaps ? mantleCaps[ri] : 400;
+            const dd0 = q.w + 2 + Math.min(jj * STEP, capR);
+            const dd1 = q.w + 2 + Math.min((jj + 1) * STEP, capR);
+            yMin = Math.min(yMin, terrainY(q, ri, dd0), terrainY(q, ri, dd1));
           }
+          y = yMin - 0.35;
+          side = sd;
         } else {
           /* talus : terrainY (celui du manteau) fond vers le H vrai */
           const sd = lat < 0 ? -1 : 1;
