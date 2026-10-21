@@ -363,14 +363,23 @@ async function refreshWorld() {
        fondu linéaire sur 10 points (160 m) autour, 0 ailleurs.
        O(n·10) par rebuild, négligeable. DOIT être prêt avant
        buildRoad : la jupe appelle terrainY. */
+    /* n°47 : la propagation relisait segFade déjà propagé (passe unique,
+       i croissant : segFade[i-1] venait d'être écrit par la boucle) : après
+       un point seg, TOUTES les rangées suivantes de la fenêtre reprenaient
+       1-1/11 = 0,91 > 0 — terrain ouvert à 90 % jusqu'au bout de la fenêtre
+       après chaque pont/tunnel, et garde n°47 aveugle là (percées mesurées
+       49 échantillons au km 50 g42, juste après le tunnel km 42,6-46).
+       On propage depuis les VRAIS segs (segRaw), conformément au
+       commentaire n°32 : fondu ±10 points (160 m), 0 ailleurs. */
     segFade = new Float64Array(d.pts.length);
+    const segRaw = new Uint8Array(d.pts.length);
     for (let i = 0; i < d.pts.length; i++)
-      segFade[i] = (d.pts[i].seg ?? 0) !== 0 ? 1 : 0;
+      segFade[i] = segRaw[i] = (d.pts[i].seg ?? 0) !== 0 ? 1 : 0;
     for (let i = 0; i < d.pts.length; i++) {
-      if (segFade[i] > 0) continue;
+      if (segRaw[i]) continue;
       let d2 = 11;
       for (let j = 1; j <= 10; j++) {
-        if ((segFade[i + j] ?? 0) > 0 || (segFade[i - j] ?? 0) > 0) { d2 = j; break; }
+        if (segRaw[i + j] || segRaw[i - j]) { d2 = j; break; }
       }
       if (d2 <= 10) segFade[i] = 1 - d2 / 11;
     }
@@ -687,6 +696,128 @@ function buildMidFar(group, d) {
     buckets.get(k).push(i);
   }
 
+  /* n°47 : GARDE-ROUTE PAR SUBDIVISION — un quad 100 m peut traverser
+     la bande bitume (|lat| < w) d'un rang qui n'est PAS son rang proche
+     (épingle à cheveux) : ses coins suivent le manteau/terrain du bras
+     proche (jusqu'à +10 m AU-DESSUS de la route de l'autre bras) et sa
+     surface bilinéaire perce le bitume — le « sol qui déborde sur la
+     route ». Ces quads DOIVENT être dessinés (ils couvrent la zone
+     [anneau du manteau .. 141 m] que le manteau érodé n°46 ne couvre
+     plus — les sauter crée des trous mesurés : 46-87 par fenêtre).
+     Solution : SUBDIVISER le quad perçant en 4×4 (25 m) et n'omettre
+     QUE les sous-cellules dont la surface dépasse la route sur la
+     bande bitume. La bande omise (≤ ~21 m autour du bitume) est
+     couverte PAR CONSTRUCTION : deck (|lat| ≤ w+2) + manteau du rang
+     percé ([w+2 .. w+2+capRow], capRow ≥ 32 → anneau ≥ 37 m > 21 m).
+     Le reste du quad (le terrain au-delà) est rendu À L'IDENTIQUE
+     (sous-cellules bilinéaires = surface du quad d'origine au
+     millimètre). Rangs exclus du test : segFade > 0 uniquement
+     (portail pont/tunnel : la roche au-dessus de la route est VOULUE,
+     n°32). Les rangées 0/dernière SONT testées : le deck y est rendu,
+     une percée y est visible (mesuré : 13-16 échantillons dy 1,6 m
+     en bord de fenêtre) ; au-delà de ±8 m (pastEnd) il n'y a pas de
+     bitume, triAbove ne peut rien y signaler. */
+  const inTri = (qx, qz, x1, y1, z1, x2, y2, z2, x3, y3, z3) => {
+    const d = (z2 - z3) * (x1 - x3) + (x3 - x2) * (z1 - z3);
+    if (Math.abs(d) < 1e-9) return null;
+    const l1 = ((z2 - z3) * (qx - x3) + (x3 - x2) * (qz - z3)) / d;
+    const l2 = ((z3 - z1) * (qx - x3) + (x1 - x3) * (qz - z3)) / d;
+    const l3 = 1 - l1 - l2;
+    if (l1 < -0.02 || l2 < -0.02 || l3 < -0.02) return null;
+    return l1 * y1 + l2 * y2 + l3 * y3;
+  };
+  const stripRowsFor = (x0, z0, x1, z1) => {
+    const out = [];
+    for (let gx = Math.floor(x0 / BUCK); gx <= Math.floor(x1 / BUCK); gx++)
+      for (let gz = Math.floor(z0 / BUCK); gz <= Math.floor(z1 / BUCK); gz++) {
+        const arr = buckets.get(bkey(gx, gz));
+        if (!arr) continue;
+        for (const r of arr) {
+          if (segFade && (segFade[r] ?? 0) > 0) continue;   /* n°47 : rangées 0/dernière TESTÉES aussi (deck rendu, percée visible) ; portail exclu */
+          const p2 = pts[r];
+          if (p2.x < x0 || p2.x > x1 || p2.y < z0 || p2.y > z1) continue;
+          out.push(p2);
+        }
+      }
+    return out;
+  };
+  const triAbove = (p2, c) => {   /* c = 18 coords : 2 triangles (9 chacune) */
+    const cs2 = Math.cos(p2.hd), sn2 = Math.sin(p2.hd);
+    const nvx2 = -sn2, nvz2 = cs2;
+    const wl = p2.w - 0.3;
+    for (let su = -8; su <= 8; su += 2) {
+      for (let k2 = -2; k2 <= 2; k2++) {
+        const qx = p2.x + cs2 * su + nvx2 * k2 * wl / 2, qz = p2.y + sn2 * su + nvz2 * k2 * wl / 2;
+        const y = inTri(qx, qz, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8])
+          ?? inTri(qx, qz, c[9], c[10], c[11], c[12], c[13], c[14], c[15], c[16], c[17]);
+        if (y !== null && y > p2.z + 0.05) return true;
+      }
+    }
+    return false;
+  };
+  const quadPierces = (a, b, c2, d2) => {
+    const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
+    const bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];
+    const cx = pos[c2 * 3], cy = pos[c2 * 3 + 1], cz = pos[c2 * 3 + 2];
+    const dx = pos[d2 * 3], dy = pos[d2 * 3 + 1], dz = pos[d2 * 3 + 2];
+    const rows = stripRowsFor(Math.min(ax, bx, cx, dx) - 40, Math.min(az, bz, cz, dz) - 40,
+                              Math.max(ax, bx, cx, dx) + 40, Math.max(az, bz, cz, dz) + 40);
+    for (const p2 of rows) {
+      if (triAbove(p2, [ax, ay, az, cx, cy, cz, bx, by, bz, bx, by, bz, cx, cy, cz, dx, dy, dz])) return true;
+    }
+    return false;
+  };
+  const subEmit = (a, b, c2, d2) => {
+    const ax = pos[a * 3], ay = pos[a * 3 + 1], az = pos[a * 3 + 2];
+    const bx = pos[b * 3], by = pos[b * 3 + 1], bz = pos[b * 3 + 2];
+    const cx = pos[c2 * 3], cy = pos[c2 * 3 + 1], cz = pos[c2 * 3 + 2];
+    const dx = pos[d2 * 3], dy = pos[d2 * 3 + 1], dz = pos[d2 * 3 + 2];
+    const ac = [col[a * 3], col[a * 3 + 1], col[a * 3 + 2]];
+    const bc = [col[b * 3], col[b * 3 + 1], col[b * 3 + 2]];
+    const cc = [col[c2 * 3], col[c2 * 3 + 1], col[c2 * 3 + 2]];
+    const dc = [col[d2 * 3], col[d2 * 3 + 1], col[d2 * 3 + 2]];
+    const rows = stripRowsFor(Math.min(ax, bx, cx, dx) - 40, Math.min(az, bz, cz, dz) - 40,
+                              Math.max(ax, bx, cx, dx) + 40, Math.max(az, bz, cz, dz) + 40);
+    const N = 4;   /* 4×4 sous-cellules (25 m) */
+    const bxv = bx - ax, byv = by - ay, bzv = bz - az;
+    const cxv = cx - ax, cyv = cy - ay, czv = cz - az;
+    const dxv = dx - bx - cx + ax, dyv = dy - by - cy + ay, dzv = dz - bz - cz + az;
+    const map = [];
+    for (let i = 0; i <= N; i++) {
+      map[i] = [];
+      for (let j = 0; j <= N; j++) {
+        if (i === 0 && j === 0) { map[i][j] = a; continue; }
+        if (i === N && j === 0) { map[i][j] = b; continue; }
+        if (i === 0 && j === N) { map[i][j] = c2; continue; }
+        if (i === N && j === N) { map[i][j] = d2; continue; }
+        const te = i / N, tf = j / N;
+        const vx = ax + bxv * te + cxv * tf + dxv * te * tf;
+        const vy = ay + byv * te + cyv * tf + dyv * te * tf;
+        const vz = az + bzv * te + czv * tf + dzv * te * tf;
+        pos.push(vx, vy, vz);
+        for (let k3 = 0; k3 < 3; k3++)
+          col.push(ac[k3] + (bc[k3] - ac[k3]) * te + (cc[k3] - ac[k3]) * tf + (dc[k3] - bc[k3] - cc[k3] + ac[k3]) * te * tf);
+        map[i][j] = pos.length / 3 - 1;
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < N; j++) {
+        const q00 = map[i][j], q10 = map[i + 1][j], q01 = map[i][j + 1], q11 = map[i + 1][j + 1];
+        const e0 = pos[q00 * 3], e1 = pos[q00 * 3 + 1], e2 = pos[q00 * 3 + 2];
+        const f0 = pos[q01 * 3], f1 = pos[q01 * 3 + 1], f2 = pos[q01 * 3 + 2];
+        const g0 = pos[q10 * 3], g1 = pos[q10 * 3 + 1], g2 = pos[q10 * 3 + 2];
+        const h0 = pos[q11 * 3], h1 = pos[q11 * 3 + 1], h2 = pos[q11 * 3 + 2];
+        let omit = false;
+        for (const p2 of rows) {
+          if (triAbove(p2, [e0, e1, e2, f0, f1, f2, g0, g1, g2, g0, g1, g2, f0, f1, f2, h0, h1, h2])) { omit = true; break; }
+        }
+        if (omit) { nHoles47++; continue; }
+        idx.push(q00, q01, q10, q10, q01, q11);
+        nQuads++;
+      }
+    }
+  };
+  let nHoles47 = 0;
   /* axes climatiques par macro-case 200 m (partagés par les cellules 2×2) */
   const climCache = new Map();
   const climAt = (x, z) => {
@@ -819,6 +950,7 @@ function buildMidFar(group, d) {
          position grille est un collage sur un AUTRE bras d'épingle (même
          signe → non couvert par la règle des 2 côtés) : quad sauté, la
          zone reste couverte par le manteau. Collage légitime ≤ ~145 m. */
+      if (quadPierces(a, b, c2, d2)) { subEmit(a, b, c2, d2); nSkip++; continue; }
       idx.push(a, c2, b, b, c2, d2);
       nQuads++;
     }
