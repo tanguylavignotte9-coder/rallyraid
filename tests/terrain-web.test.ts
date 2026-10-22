@@ -11,6 +11,7 @@ import {
   HO4 as HO4c, closedAt as clc, obstCost as occ,
   riverAt as rivc, villageCell as vcc, villageNear as vnc, forestAt as foc,
   VILL_CELL as VCc, VILL_P as VPc,
+  parAngle as pac, parAt as patc, PAR_ZONE as PZc, PAR_KEEP as PKc,
 } from '../core/terrain.ts';
 import {
   H as Hw, Hroad as Hrw, Hmacro as Hmw, HroadC as Hrcw,
@@ -19,6 +20,7 @@ import {
   HO4 as HO4w, closedAt as clw, obstCost as ocw,
   riverAt as rivw, villageCell as vcw, villageNear as vnw, forestAt as fow,
   VILL_CELL as VCw, VILL_P as VPw,
+  parAngle as paw, parAt as patw, PAR_ZONE as PZw, PAR_KEEP as PKw,
 } from '../web/terrain.js';
 
 test('26/33 : champs navigateur identiques au cœur (bit à bit)', () => {
@@ -101,6 +103,26 @@ test('51 : villages / gué / forêt macro navigateur identiques au cœur (bit à
       `villageCell(${Math.floor(x / VCc)}, ${Math.floor(y / VCc)}, ${seed})`);
     assert.equal(vnw(x, y, seed, memoW), vnc(x, y, seed, memoC),
       `villageNear(${x}, ${y}, ${seed})`);
+    n++;
+  }
+  assert.ok(n >= 1000, `${n} points vérifiés`);
+});
+
+test('52 : parcellaire agricole navigateur identique au cœur (bit à bit)', () => {
+  /* n°52 — parAngle (axe du damier par zone PAR_ZONE de 12 km, tourné
+     par ghash) et parAt (présence : plaine cultivée famAt 0 + fenêtre
+     d'humidité 0,35-0,75 en sigmoïdes) doivent être identiques entre
+     core et web : les FERMES du rendu (world3d.js) s'alignent sur le
+     MÊME axe de damier que la route (diégétique). */
+  assert.equal(PZw, PZc, 'PAR_ZONE');
+  assert.equal(PKw, PKc, 'PAR_KEEP');
+  let n = 0;
+  for (let i = 0; i < 1200; i++) {
+    const x = (i * 173) % 40000 - 20000 + (i % 7) * 53;
+    const y = (i * 311) % 40000 - 20000 + (i % 11) * 97;
+    const seed = [42, 12345, 777][i % 3]!;
+    assert.equal(paw(x, y, seed), pac(x, y, seed), `parAngle(${x}, ${y}, ${seed})`);
+    assert.equal(patw(x, y, seed), patc(x, y, seed), `parAt(${x}, ${y}, ${seed})`);
     n++;
   }
   assert.ok(n >= 1000, `${n} points vérifiés`);

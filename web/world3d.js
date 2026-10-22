@@ -23,7 +23,7 @@
    ============================================================ */
 
 import * as THREE from 'three';
-import { H, Hroad, WP, setWorldParams, ss, coastAt, tempAt, moistAt, famAt, flowAccum, villageCell, VILL_CELL } from './terrain.js';
+import { H, Hroad, WP, setWorldParams, ss, coastAt, tempAt, moistAt, famAt, flowAccum, villageCell, VILL_CELL, parAngle, parAt } from './terrain.js';   // n°52 : parcellaire (fermes alignées)
 
 /* ---- PRNG local : copie du mulberry32 du cœur, semée par la graine
    de course — le décor client est déterministe et IDENTIQUE pour tous
@@ -1309,9 +1309,15 @@ function buildVillages(group, d) {
     if (!v) continue;
     const isVillage = v.kind === 'village';
     const cx = v.x, cz = v.y;
-    /* orientation des maisons par hash MONDE (plus de cap route) */
+    /* orientation des maisons : les BOURGS restent organiques (hash
+       MONDE, plus de cap route) ; n°52 — les FERMES suivent l'axe du
+       damier parcellaire (parAngle/parAt, le MÊME champ que la route)
+       quand elles vivent en plaine cultivée : le grand côté des bâtiments
+       s'aligne sur les rangées, diégétique avec la route qui les suit. */
     const key = ix * 1013 + iy;
-    const rotBase = posHash(key, 21) * Math.PI * 2;
+    const rotBase = !isVillage && parAt(cx, cz, seed) > 0
+      ? parAngle(cx, cz, seed) + (posHash(key, 21) - 0.5) * 0.4
+      : posHash(key, 21) * Math.PI * 2;
     const nHouse = isVillage ? 6 + Math.floor(posHash(key, 12) * 13) : 2;
     const radius = isVillage ? 40 + posHash(key, 13) * 80 : 12;
     for (let h = 0; h < nHouse; h++) {

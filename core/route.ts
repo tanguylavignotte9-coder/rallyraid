@@ -54,7 +54,7 @@
 
 import { mulberry32, SEG, type Track } from './engine.ts';
 import { H, HroadC, WP, tempAt, moistAt, coastAt, famAt, ss, obstCost } from './terrain.ts';
-import { villageNear, forestAt, villageCell, VILL_CELL } from './terrain.ts';   // n°51 : champ de villages + gué (obstCost étendu wRiv)
+import { villageNear, forestAt, villageCell, VILL_CELL, parAngle, parAt, PAR_KEEP } from './terrain.ts';   // n°51 : champ de villages + gué · n°52 : parcellaire
 
 export const RSAMP = 2600;            // échantillons par chunk
 export const RCHUNK = SEG * RSAMP;    // 20 800 m — un chunk
@@ -264,6 +264,14 @@ const ER = {
   villR: 700,
   wRiv: 2,
   wForMac: 100,
+  /* n°52 — PARCELLAIRE AGRICOLE : le damier oriente le cap en plaine
+     cultivée (parAt, lu au PAS — pas au lookahead) mais se relâche
+     près des bourgs (parKeep : la rocade n'est pas un damier). Le
+     coût paie |sin 2Δcap| : les DEUX axes du damier comptent — la
+     route suit les rangées, wPar 12 (banc bench-n52 : 6 ne marquait
+     pas assez, 25 cassait les gates de variété). */
+  wPar: 12,
+  parKeep: PAR_KEEP,
 };
 
 /* ---- mémoire anti-croisement : buckets de 250 m des segments commis.
@@ -519,6 +527,12 @@ export function buildChunk(rt: Route, k: number): Chunk {
         if (v && v.kind === 'village') vlist.push(v);
       }
     }
+    /* n°52 — parcellaire au PAS (pas au lookahead : le damier est lu
+       à la position EXACTE, partagé par les 13 caps) : force parAt,
+       axe parAngle de la zone, relâché près des bourgs (rocade). */
+    const parS = parAt(x, y, rt.seed);
+    const parA = parAngle(x, y, rt.seed);
+    const parEff = parS * ss(ER.villR, ER.parKeep, villageNear(x, y, rt.seed, vmemo));
     /* ---- choix du cap candidat au moindre coût ---- */
     let best: { cost: number; d: number } | null = null;
     const dOld = new Float64Array(ER.cands.length);
@@ -568,7 +582,8 @@ export function buildChunk(rt: Route, k: number): Chunk {
       if (dOld1 < ER.avoidR) avoidPen += ER.wAvoid * (1 - dOld1 / ER.avoidR);
       const cost = ER.wHug * hug / ER.lookC + ER.wPur * pur * pur
                  + ER.wSm * (d - steerPrev) ** 2 + ER.wZero * Math.abs(d)
-                 + steepPen + leashPen * pur * pur + avoidPen + obst;
+                 + steepPen + leashPen * pur * pur + avoidPen + obst
+                 + ER.wPar * parEff * Math.abs(Math.sin(2 * (hd2 - parA)));
       if (!best || cost < best.cost) best = { cost, d };
     }
     /* évasion en 2 passes : si TOUS les candidats coupent (best ≥ 1e7),

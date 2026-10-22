@@ -367,12 +367,14 @@ test('route V4 : ψ découplé — POI et régénération identiques (ADR 0004)'
      premiers 25000/54560/79456:station). C'est une NOUVELLE version de
      route : re-set des courses en cours (arbitrage assumé). */
   const pa = routeTrack(makeRoute(12345, 600)).poisAhead(0, 600_000);
-  /* n°51 : POI diégétiques — le POI se snappe au point d'approche
-     maximale route↔bourg (design P2, banc bench-n51) → les positions
-     bougent (mesuré : 18 POI, les 3 premiers 21160/56768/76096). */
-  assert.equal(pa.length, 18, 'POI n°51 (graine 12345, 600 km)');
+  /* n°52 : parcellaire agricole — le contrôleur paie le cap HORS-AXE
+     du damier (wPar 12, PAR_ZONE/PAR_KEEP — banc bench-n52) : en plaine
+     cultivée la route suit les rangées, les portions s'alignent → les
+     abscisses de POI bougent (mesuré : 17 POI, les 3 premiers
+     22312/53984/81280:station). */
+  assert.equal(pa.length, 17, 'POI n°52 (graine 12345, 600 km)');
   assert.deepEqual(pa.slice(0, 3).map((p) => `${p.s}:${p.kind}`),
-    ['21160:station', '56768:station', '76096:station'], 'positions POI n°51 (diégétiques)');
+    ['22312:station', '53984:station', '81280:station'], 'positions POI n°52 (parcellaire)');
 });
 
 test('route V5 : échelle voiture — retournements, mort-droit < 5 %', () => {

@@ -446,6 +446,37 @@ export function forestAt(x: number, y: number, seed: number): number {
   return ss(0.78, 0.92, moistAt(x, y, seed)) * ss(2, 8, tempAt(x, y, seed));
 }
 
+/* ============================================================
+   n°52 — PARCELLAIRE AGRICOLE (monde crédible P3) : la plaine
+   cultivée est un DAMIER orthogonal orienté par ZONE — champ PUR
+   de (graine, x, y) : chaque zone PAR_ZONE (12 km) tire l'axe de
+   ses rangées par ghash (parAngle ∈ [0, π/2[), le damier tourne
+   d'une zone à l'autre (rupture bocage/openfield aux frontières).
+   La route paie le cap HORS-AXE (|sin 2Δ| dans le contrôleur, les
+   deux axes du damier comptent) → en plaine cultivée, longues
+   droites et angles droits ÉMERGENTS — la route suit les rangées,
+   comme une vraie route d'openfield. parAt : le damier vit dans
+   la PLAINE cultivée (famAt 0) sur la fenêtre d'humidité 0,35-0,75
+   (ni désert, ni forêt, ni marais) — sigmoïdes continues. PAR_KEEP :
+   distance aux bourgs où le damier se relâche (la rocade n'est pas
+   un damier). ZÉRO PRNG (ADR 0004). Jumeau web/terrain.js
+   IDENTIQUE au bit près (terrain-web.test).
+   ============================================================ */
+export const PAR_ZONE = 12000;   // m : zone d'orientation du damier
+export const PAR_KEEP = 1400;    // m : relâchement du damier près des bourgs
+
+/* axe du damier de la zone (rad, ∈ [0, π/2[) — orienté par hash pur */
+export function parAngle(x: number, y: number, seed: number): number {
+  const zx = Math.floor(x / PAR_ZONE), zy = Math.floor(y / PAR_ZONE);
+  return ghash(zx, zy, seed + 411) * Math.PI / 2;
+}
+
+/* présence du parcellaire [0,1] : plaine + humidité cultivable */
+export function parAt(x: number, y: number, seed: number): number {
+  const m = moistAt(x, y, seed);
+  return (famAt(x, y, seed) === 0 ? 1 : 0) * ss(0.35, 0.42, m) * ss(0.75, 0.68, m);
+}
+
 /* n°33 — plateforme routière CÔTIÈRE : la route ne plonge jamais
    sous la mer — HroadC remonte au-dessus du niveau marin
    (CAUSEWAY_H) : passages sur l'eau, lagunes et estuaires se

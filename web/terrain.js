@@ -315,6 +315,27 @@ export function forestAt(x, y, seed) {
   return ss(0.78, 0.92, moistAt(x, y, seed)) * ss(2, 8, tempAt(x, y, seed));
 }
 
+/* ============================================================
+   n°52 — PARCELLAIRE AGRICOLE (monde crédible P3)
+   Jumeau JS de core/terrain.ts — IDENTIQUE au bit près
+   (tests/terrain-web.test.ts). La description complète est dans
+   core/terrain.ts.
+   ============================================================ */
+export const PAR_ZONE = 12000;   // m : zone d'orientation du damier
+export const PAR_KEEP = 1400;    // m : relâchement du damier près des bourgs
+
+/* axe du damier de la zone (rad, ∈ [0, π/2[) — orienté par hash pur */
+export function parAngle(x, y, seed) {
+  const zx = Math.floor(x / PAR_ZONE), zy = Math.floor(y / PAR_ZONE);
+  return ghash(zx, zy, seed + 411) * Math.PI / 2;
+}
+
+/* présence du parcellaire [0,1] : plaine + humidité cultivable */
+export function parAt(x, y, seed) {
+  const m = moistAt(x, y, seed);
+  return (famAt(x, y, seed) === 0 ? 1 : 0) * ss(0.35, 0.42, m) * ss(0.75, 0.68, m);
+}
+
 export const CAUSEWAY_H = 12;
 
 export function HroadC(x, y, seed) {
